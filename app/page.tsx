@@ -48,7 +48,7 @@ function Editor() {
   }, []);
 
   // 인식 결과의 날짜가 달라 날짜를 바꿨을 때, 그 날짜를 불러온 뒤 덧붙일 인식 결과
-  const pending = useRef<{ date: string; ocr: OcrResult } | null>(null);
+  const pending = useRef<{ date: string; ocrs: OcrResult[]; note: string } | null>(null);
 
   async function load(d: string) {
     setBusy("불러오는 중…");
@@ -66,7 +66,7 @@ function Editor() {
     if (pending.current?.date === d) {
       const p = pending.current;
       pending.current = null;
-      applyOcr(base, p.ocr, p.ocr.note);
+      applyOcr(base, p.ocrs, p.note);
       return;
     }
     setRows(base.rows);
@@ -79,25 +79,45 @@ function Editor() {
 
   useEffect(() => { load(date); }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** 인식 결과를 기존 행 뒤에 이어 붙임 (〃·분만 적힌 시간은 기존 마지막 행을 이어받음) */
+  /**
+   * 인식 결과(여러 장이면 순서대로)를 기존 행 뒤에 이어 붙임.
+   * 장이 바뀌어도 〃·분만 적힌 시간은 바로 앞 장의 마지막 행을 이어받는다.
+   */
   function applyOcr(
     base: { rows: EditRow[]; imagePaths: string[]; images: string[]; writtenTotal: number | null },
-    ocr: OcrResult, note = "",
+    ocrs: OcrResult[], note = "",
   ) {
-    const last = base.rows[base.rows.length - 1];
-    const lastT = last ? timeToMinutes(last.out_time) : null;
-    const startSeq = base.rows.length ? Math.max(...base.rows.map((x) => x.seq)) + 1 : 1;
-    const added = normalizeRows(ocr.rows, names, startSeq, {
-      company: last?.company,
-      time: lastT === null ? null : { h: Math.floor(lastT / 60), m: lastT % 60 },
-    });
-    setRows([...base.rows, ...added]);
-    setImagePaths([...base.imagePaths, ...(ocr.imagePath ? [ocr.imagePath] : [])]);
-    setImages([...base.images, ocr.localUrl]);
-    setWrittenTotal(ocr.total ?? base.writtenTotal);
+    let all = [...base.rows];
+    let paths = [...base.imagePaths];
+    let imgs = [...base.images];
+    let total = base.writtenTotal;
+    const perPage: number[] = [];
+    let nCheck = 0;
+
+    for (const ocr of ocrs) {
+      const last = all[all.length - 1];
+      const lastT = last ? timeToMinutes(last.out_time) : null;
+      const startSeq = all.length ? Math.max(...all.map((x) => x.seq)) + 1 : 1;
+      const added = normalizeRows(ocr.rows, names, startSeq, {
+        company: last?.company,
+        time: lastT === null ? null : { h: Math.floor(lastT / 60), m: lastT % 60 },
+      });
+      all = [...all, ...added];
+      if (ocr.imagePath) paths = [...paths, ocr.imagePath];
+      imgs = [...imgs, ocr.localUrl];
+      if (ocr.total !== null) total = ocr.total; // 총댓수는 마지막 장에 적힌 값을 씀
+      perPage.push(added.length);
+      nCheck += added.reduce((a, r) => a + Object.keys(r.check ?? {}).length, 0);
+    }
+
+    setRows(all);
+    setImagePaths(paths);
+    setImages(imgs);
+    setWrittenTotal(total);
     setDirty(true);
-    const nCheck = added.reduce((a, r) => a + Object.keys(r.check ?? {}).length, 0);
-    setMsg({ text: `${added.length}건을 읽었습니다.${nCheck ? ` 노란 칸 ${nCheck}개를 사진과 비교해 확인해 주세요.` : ""}${note}` });
+    const pages = perPage.length > 1 ? ` (${perPage.map((n, i) => `${i + 1}장 ${n}건`).join(", ")})` : "";
+    const sum = perPage.reduce((a, b) => a + b, 0);
+    setMsg({ text: `${sum}건을 읽었습니다${pages}.${nCheck ? ` 노란 칸 ${nCheck}개를 사진과 비교해 확인해 주세요.` : ""}${note}` });
   }
 
   // 저장 안 하고 나가려 할 때 경고
@@ -114,43 +134,53 @@ function Editor() {
     router.replace(`/?date=${d}`);
   };
 
-  const recognize = async (file: File) => {
+  /** 사진 1장 이상을 고른 순서대로 인식 (120대 넘는 날은 2장) */
+  const recognize = async (picked: File[]) => {
+    if (!picked.length) return;
     setMsg(null);
-    setBusy("Gemini가 기록지를 읽는 중… (20~40초)");
-    const localUrl = URL.createObjectURL(file);
+    // 갤러리에서 여러 장 고르면 순서가 섞일 수 있어 파일 이름(촬영 시각 순) 기준으로 정렬
+    const files = picked.length > 1 ? [...picked].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })) : picked;
+    const ocrs: OcrResult[] = [];
+    let dateText = "";
     try {
-      const fd = new FormData();
-      fd.append("image", await shrink(file), "scan.jpg");
-      fd.append("date", date);
-      const r = await fetch("/api/ocr", { method: "POST", body: fd });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error);
-
-      const total = parseInt(String(j.total_text).replace(/\D/g, ""), 10);
-      const ocr: OcrResult = {
-        rows: j.rows as RawRow[],
-        imagePath: j.imagePath ?? null,
-        localUrl,
-        total: Number.isFinite(total) ? total : null,
-      };
-
-      // 기록지의 '월일'이 선택한 날짜와 다르면: 아직 아무것도 없을 때만 그 날짜로 옮김
-      const formDate = parseFormDate(j.date_text, Number(date.slice(0, 4)));
-      if (formDate && formDate !== date && !rows.length && !exists && !dirty) {
-        ocr.note = ` 기록지 날짜(${j.date_text})에 맞춰 ${koreanDate(formDate)}로 바꿨습니다.`;
-        pending.current = { date: formDate, ocr };
-        setDate(formDate);
-        router.replace(`/?date=${formDate}`);
-        return; // load(formDate)가 끝나면 applyOcr로 이어 붙음
+      for (let i = 0; i < files.length; i++) {
+        setBusy(`Gemini가 기록지를 읽는 중… ${files.length > 1 ? `(${i + 1}/${files.length}장) ` : ""}20~40초`);
+        const fd = new FormData();
+        fd.append("image", await shrink(files[i]), "scan.jpg");
+        fd.append("date", date);
+        const r = await fetch("/api/ocr", { method: "POST", body: fd });
+        const j = await r.json();
+        if (!r.ok) throw new Error(`${files.length > 1 ? `${i + 1}번째 사진: ` : ""}${j.error}`);
+        const total = parseInt(String(j.total_text).replace(/\D/g, ""), 10);
+        ocrs.push({
+          rows: j.rows as RawRow[],
+          imagePath: j.imagePath ?? null,
+          localUrl: URL.createObjectURL(files[i]),
+          total: Number.isFinite(total) ? total : null,
+        });
+        if (!dateText && j.date_text) dateText = j.date_text;
       }
-      const note = formDate && formDate !== date
-        ? ` ⚠ 기록지 날짜는 ${j.date_text}인데 ${koreanDate(date)}에 넣었습니다. 날짜를 확인하세요.` : "";
-      applyOcr({ rows, imagePaths, images, writtenTotal }, ocr, note);
     } catch (e) {
-      setMsg({ text: (e as Error).message, err: true });
-    } finally {
       setBusy(null);
+      // 앞 장은 성공했으면 그만큼은 넣어 둔다
+      if (ocrs.length) applyOcr({ rows, imagePaths, images, writtenTotal }, ocrs,
+        ` ⚠ ${(e as Error).message} — 그 사진은 다시 올려 주세요.`);
+      else setMsg({ text: (e as Error).message, err: true });
+      return;
     }
+    setBusy(null);
+
+    // 기록지의 '월일'이 선택한 날짜와 다르면: 아직 아무것도 없을 때만 그 날짜로 옮김
+    const formDate = parseFormDate(dateText, Number(date.slice(0, 4)));
+    if (formDate && formDate !== date && !rows.length && !exists && !dirty) {
+      pending.current = { date: formDate, ocrs, note: ` 기록지 날짜(${dateText})에 맞춰 ${koreanDate(formDate)}로 바꿨습니다.` };
+      setDate(formDate);
+      router.replace(`/?date=${formDate}`);
+      return; // load(formDate)가 끝나면 applyOcr로 이어 붙음
+    }
+    const note = formDate && formDate !== date
+      ? ` ⚠ 기록지 날짜는 ${dateText}인데 ${koreanDate(date)}에 넣었습니다. 날짜를 확인하세요.` : "";
+    applyOcr({ rows, imagePaths, images, writtenTotal }, ocrs, note);
   };
 
   const update = (i: number, f: Field, v: string) => {
@@ -233,12 +263,14 @@ function Editor() {
       <section className="card upload">
         <div className="row">
           <button disabled={!!busy} onClick={() => camRef.current?.click()}>📷 촬영해서 인식</button>
-          <button className="ghost" disabled={!!busy} onClick={() => fileRef.current?.click()}>사진 파일 선택</button>
+          <button className="ghost" disabled={!!busy} onClick={() => fileRef.current?.click()}>사진 선택 (여러 장 가능)</button>
           <input ref={camRef} type="file" accept="image/*" capture="environment" hidden
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) recognize(f); e.target.value = ""; }} />
-          <input ref={fileRef} type="file" accept="image/*" hidden
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) recognize(f); e.target.value = ""; }} />
-          <span className="hint">기록지 전체가 들어오게, 그림자 없이 위에서 찍으면 정확해요. 두 번째 장은 이어서 추가됩니다.</span>
+            onChange={(e) => { recognize(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+          <input ref={fileRef} type="file" accept="image/*" multiple hidden
+            onChange={(e) => { recognize(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+          <span className="hint">
+            120대가 넘는 날은 두 장을 한꺼번에 고르거나, 첫 장 인식 후 둘째 장을 찍으면 121번부터 이어집니다.
+          </span>
         </div>
         {busy && <div className="msg busy">{busy}</div>}
         {msg && <div className={`msg ${msg.err ? "err" : ""}`}>{msg.text}</div>}

@@ -11,9 +11,12 @@ function prompt(companies: string[], from: number, to: number) {
 - 표는 왼쪽에서 오른쪽으로 6묶음이고, 각 묶음은 [번호 | 차량번호 | 업체 | 출차시간] 4칸 × 20줄입니다.
   1묶음 = 번호 1~20, 2묶음 = 21~40, 3묶음 = 41~60, 4묶음 = 61~80, 5묶음 = 81~100, 6묶음 = 101~120.
 - 번호는 인쇄된 숫자입니다. 차량번호·업체·출차시간은 손글씨입니다.
+- 하루에 120대가 넘으면 두 번째 장을 씁니다. 두 번째 장은 번호가 121~240으로 인쇄되어 있거나,
+  1~120 위에 121~240을 손으로 고쳐 써 두었을 수 있습니다. 그 경우 seq에는 121~240 번호를 적으세요.
 
 [이번에 읽을 범위]
-번호 ${from}~${to} 중 차량번호가 적힌 줄만 번호 순서대로 읽으세요. 빈 줄은 건너뜁니다.
+${from === 1 ? "왼쪽 1~3묶음" : "오른쪽 4~6묶음"}(번호 ${from}~${to}, 두 번째 장이라면 ${from + 120}~${to + 120}) 중
+차량번호가 적힌 줄만 번호 순서대로 읽으세요. 빈 줄은 건너뜁니다.
 
 [각 칸을 적는 법 — 해석하지 말고 보이는 그대로]
 - seq: 인쇄된 번호(숫자).
@@ -68,7 +71,12 @@ async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType
   const text = res.text ?? "";
   try {
     const p = JSON.parse(text) as PageRead;
-    p.rows = (p.rows ?? []).filter((r) => Number(r.seq) >= from && Number(r.seq) <= to);
+    // 장 안에서의 위치(1~120)로 범위를 확인 — 두 번째 장의 121~240 번호도 받아들임
+    const pos = (s: number) => ((s - 1) % 120) + 1;
+    p.rows = (p.rows ?? []).filter((r) => {
+      const s = Number(r.seq);
+      return Number.isInteger(s) && s > 0 && pos(s) >= from && pos(s) <= to;
+    });
     return p;
   } catch {
     throw new Error("Gemini 응답을 해석하지 못했습니다: " + text.slice(0, 200));

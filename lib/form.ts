@@ -104,6 +104,11 @@ export function normalizeRows(raw: RawRow[], companyNames: string[], startSeq = 
   let lastCompany = prevState?.company ?? "";
   let lastTime = prevState?.time ?? null;
 
+  // 번호 방식은 장 단위로 정함: 121 이상 번호가 적힌 장이면 그대로, 1~120짜리 장이면 앞 장 뒤로 밀어 붙임
+  const printedNums = raw.map((r) => Number(r.seq)).filter((n) => Number.isInteger(n) && n > 0);
+  const continuesNumbering = printedNums.some((n) => n > 120) && Math.min(...printedNums) >= startSeq;
+  const offset = startSeq === 1 || continuesNumbering ? 0 : startSeq - 1;
+
   raw.forEach((r, i) => {
     const check: EditRow["check"] = {};
     // 차량번호: 숫자 4자리
@@ -134,9 +139,13 @@ export function normalizeRows(raw: RawRow[], companyNames: string[], startSeq = 
       if (!t.note || !t.note.includes("오류")) lastTime = { h: t.h, m: t.m };
     }
 
-    // 인쇄된 번호를 그대로 쓰고(빈 줄을 건너뛰어도 번호가 밀리지 않게), 없으면 순서대로
+    // 기록지의 번호를 기준으로 연번을 매김 (빈 줄을 건너뛰어도 번호가 밀리지 않게)
+    //  - 장마다 1~120이면: 앞 장 마지막 번호 뒤로 이어 붙임 (둘째 장 1번 → 121번)
+    //  - 둘째 장에 121~ 번호가 적혀 있으면: 그 번호를 그대로 사용
     const printed = Number(r.seq);
-    const seq = Number.isInteger(printed) && printed > 0 ? startSeq - 1 + printed : startSeq + i;
+    const seq = !Number.isInteger(printed) || printed <= 0 ? startSeq + i
+      : offset === 0 ? printed
+      : offset + ((printed - 1) % 120) + 1; // 장 안 위치(1~120) 기준이라 121~ 번호가 섞여 와도 겹치지 않음
     out.push({ seq, vehicle_no: vehicle || vRaw, company, out_time, check });
   });
   return out;
