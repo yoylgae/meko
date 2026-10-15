@@ -1,0 +1,53 @@
+# 폐기물 반출 현황 — 손글씨 기록지 → 엑셀
+
+손으로 쓴 '폐기물 반출 현황' 기록지를 사진으로 찍으면 Gemini가 읽어 표로 옮기고,
+확인·수정 후 **날짜별로 Supabase DB에 저장**합니다. 엑셀은 기존 양식 그대로 내려받습니다.
+
+## 화면
+- **입력** (`/`) — 촬영 → 인식 → 사진과 나란히 보며 수정 → 저장. 오른쪽에 업체별 대수가 바로 집계됩니다.
+  - 노란 칸 = 확인이 필요한 값 (마우스를 올리면 이유 표시). 하단 `확인 필요 N칸 →`으로 이동.
+  - 기록지의 '월일'(예: 10/15)을 읽어 날짜를 자동으로 맞춥니다.
+  - 같은 날 두 번째 장은 이어서 추가됩니다.
+- **기록** (`/history`) — 날짜별 목록, 하루/기간 엑셀 받기
+- **업체** (`/settings`) — 업체 이름·순서 관리 (인식 교정과 엑셀 집계표 순서에 사용)
+
+## 기록지 규칙 (자동 처리)
+| 기록지 | 처리 |
+|---|---|
+| 업체 칸의 `〃` (11·7·ㄱ처럼 보이는 흘림 포함) | 위 행 업체로 채움 |
+| 시간에 분만 적힘 (`11`, `:48`) | 위 행의 시(時)를 이어받음, 분이 줄면 다음 시로 |
+| 흘려 쓴 업체명 (`한발`, `홍멍`) | 등록 업체 중 가장 가까운 이름으로 교정 |
+| 차량번호가 4자리가 아님 | 확인 칸으로 표시 |
+| 총댓수와 행 수가 다름 | 경고 표시 |
+
+## 엑셀 (기존 양식과 동일 배치)
+- `연번|차량번호|업체|시간` × 6묶음 × 16줄, 96건마다 다음 구역
+- 오른쪽 `금일합계`, `대아`, 업체별 대수 — **COUNTIF 수식**이라 엑셀에서 고쳐도 자동 재계산
+- 시간은 엑셀 시간값(`h:mm`), A4 가로 1페이지 인쇄 설정
+- 기간으로 받으면 `업체별 집계`(날짜×업체) + `전체 목록` + 날짜별 시트
+
+## 구조
+| 역할 | 사용 |
+|---|---|
+| 웹사이트·API | Next.js 15 → Vercel |
+| 글씨 인식 | Gemini (`gemini-flash-latest`, 1~60 / 61~120 두 번 나눠 동시 인식) |
+| DB·사진 보관 | Supabase (`companies`, `daily_reports`, `dispatches`, Storage `scans`) |
+| 엑셀 | ExcelJS |
+
+## 환경변수 (Vercel → Settings → Environment Variables)
+| 이름 | 값 |
+|---|---|
+| `GEMINI_API_KEY` | https://aistudio.google.com/apikey |
+| `GEMINI_MODEL` | (선택) 기본 `gemini-flash-latest` |
+| `SUPABASE_URL` | `https://nluhxzfdadqhrhatnrfq.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API Keys → `service_role`(또는 secret) 키 |
+| `APP_PASSWORD` | 사이트 접속 비밀번호 |
+
+DB 구조는 `supabase/schema.sql` (이미 적용됨).
+
+## 내 컴퓨터에서 실행
+```bash
+cp .env.example .env.local   # 값 채우기
+npm install
+npm run dev                  # http://localhost:3000
+```
