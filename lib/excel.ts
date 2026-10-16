@@ -30,8 +30,9 @@ const vehicleCell = (v: string) => (/^[1-9]\d*$/.test(v) ? Number(v) : v);
  *  A~X: [연번|차량번호|업체|시간] × 6묶음, 16줄씩, 96건마다 다음 구역
  *  Z~AA: 금일합계, 따로 표시 업체(대아), 업체별 대수 (COUNTIF 수식)
  */
-export function addDaySheet(wb: ExcelJS.Workbook, date: string, rows: Dispatch[], companies: Company[], sheetName?: string) {
-  const ws = wb.addWorksheet(sheetName ?? date, {
+export function addDaySheet(wb: ExcelJS.Workbook, date: string, rows: Dispatch[], companies: Company[],
+  opts: { sheetName?: string; siteName?: string } = {}) {
+  const ws = wb.addWorksheet(opts.sheetName ?? date, {
     pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0,
       margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
     views: [{ showGridLines: false }],
@@ -51,7 +52,7 @@ export function addDaySheet(wb: ExcelJS.Workbook, date: string, rows: Dispatch[]
   // 제목줄
   ws.mergeCells("A1:U1");
   ws.mergeCells("V1:X1");
-  ws.getCell("A1").value = "폐기물 반출 현황";
+  ws.getCell("A1").value = opts.siteName ? `폐기물 반출 현황 (${opts.siteName})` : "폐기물 반출 현황";
   ws.getCell("A1").font = { name: FONT, size: 12, bold: true };
   ws.getCell("A1").alignment = { horizontal: "center", vertical: "middle" };
   ws.getCell("V1").value = koreanDate(date);

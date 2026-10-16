@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AUTH_COOKIE, authToken } from "@/lib/auth";
+import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 
+const PUBLIC = ["/login", "/signup", "/api/login", "/api/signup"];
+
+/** 로그인 여부만 확인 (승인·현장 권한은 각 API에서 DB로 확인) */
 export async function middleware(req: NextRequest) {
-  // 비밀번호를 설정하지 않았으면 잠금 없이 동작
-  if (!process.env.APP_PASSWORD) return NextResponse.next();
-
   const { pathname } = req.nextUrl;
-  if (pathname.startsWith("/login") || pathname.startsWith("/api/login")) {
-    return NextResponse.next();
-  }
+  if (PUBLIC.some((p) => pathname === p || pathname.startsWith(p + "/"))) return NextResponse.next();
 
-  const ok = req.cookies.get(AUTH_COOKIE)?.value === (await authToken());
-  if (ok) return NextResponse.next();
+  const uid = await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value);
+  if (uid) return NextResponse.next();
 
   if (pathname.startsWith("/api/")) {
     return NextResponse.json({ error: "로그인이 필요합니다." }, { status: 401 });
   }
   const url = req.nextUrl.clone();
   url.pathname = "/login";
+  url.search = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname + req.nextUrl.search)}`;
   return NextResponse.redirect(url);
 }
 
