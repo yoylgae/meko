@@ -2,32 +2,31 @@ import { keepRange, mergeHalves, ocrPrompt, type PageRead } from "./gemini";
 
 /**
  * Claude(기본 Sonnet)로 기록지 읽기 — Gemini가 실패했을 때 대신 사용.
- * 같은 안내문을 쓰고, '도구 호출'로 답을 강제해서 항상 정해진 JSON 모양으로 받는다.
+ * 같은 안내문을 쓰고, 구조화 출력(output_config JSON 스키마)으로 항상 정해진 모양의 JSON을 받는다.
+ * (최신 모델은 tool_choice로 도구 호출을 강제하는 방식을 지원하지 않음)
  */
-const TOOL = {
-  name: "record_sheet",
-  description: "기록지에서 읽은 값을 기록합니다.",
-  input_schema: {
-    type: "object",
-    properties: {
-      date_text: { type: "string", description: "'월일' 칸 값, 없으면 빈 문자열" },
-      total_text: { type: "string", description: "'총댓수' 칸 값, 없으면 빈 문자열" },
-      rows: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            seq: { type: "integer" },
-            vehicle: { type: "string" },
-            company: { type: "string" },
-            time: { type: "string" },
-          },
-          required: ["seq", "vehicle", "company", "time"],
+const SCHEMA = {
+  type: "object",
+  properties: {
+    date_text: { type: "string", description: "'월일' 칸 값, 없으면 빈 문자열" },
+    total_text: { type: "string", description: "'총댓수' 칸 값, 없으면 빈 문자열" },
+    rows: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          seq: { type: "integer" },
+          vehicle: { type: "string" },
+          company: { type: "string" },
+          time: { type: "string" },
         },
+        required: ["seq", "vehicle", "company", "time"],
+        additionalProperties: false,
       },
     },
-    required: ["date_text", "total_text", "rows"],
   },
+  required: ["date_text", "total_text", "rows"],
+  additionalProperties: false,
 };
 
 /** 붙여넣을 때 섞인 공백·줄바꿈·따옴표 제거 */
@@ -45,14 +44,12 @@ async function readRange(image: string, mimeType: string, companies: string[], f
     body: JSON.stringify({
       model: process.env.CLAUDE_MODEL || "claude-sonnet-5-5",
       max_tokens: 8000,
-      temperature: 0,
-      tools: [TOOL],
-      tool_choice: { type: "tool", name: TOOL.name },
+      output_config: { format: { type: "json_schema", schema: SCHEMA } },
       messages: [{
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mimeType, data: image } },
-          { type: "text", text: ocrPrompt(companies, from, to) + "\n\n결과는 record_sheet 도구로 기록하세요." },
+          { type: "text", text: ocrPrompt(companies, from, to) },
         ],
       }],
     }),
@@ -67,9 +64,13 @@ async function readRange(image: string, mimeType: string, companies: string[], f
       res.status === 529 || res.status >= 500 ? "Claude 서버가 잠시 바쁩니다." : "";
     throw new Error(`${hint ? hint + " " : ""}(Claude: ${msg})`);
   }
-  const block = (j.content ?? []).find((b: { type: string }) => b.type === "tool_use");
-  if (!block?.input) throw new Error("Claude 응답에서 결과를 찾지 못했습니다.");
-  return keepRange(block.input as PageRead, from, to);
+  if (j.stop_reason === "max_tokens") throw new Error("Claude 응답이 너무 길어 잘렸습니다.");
+  const text = (j.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+  try {
+    return keepRange(JSON.parse(text) as PageRead, from, to);
+  } catch {
+    throw new Error("Claude 응답을 해석하지 못했습니다: " + text.slice(0, 200));
+  }
 }
 
 export async function readPageClaude(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
