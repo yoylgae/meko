@@ -144,21 +144,36 @@ function Editor() {
     let dateText = "";
     try {
       for (let i = 0; i < files.length; i++) {
-        setBusy(`Gemini가 기록지를 읽는 중… ${files.length > 1 ? `(${i + 1}/${files.length}장) ` : ""}20~40초`);
-        const fd = new FormData();
-        fd.append("image", await shrink(files[i]), "scan.jpg");
-        fd.append("date", date);
-        const r = await fetch("/api/ocr", { method: "POST", body: fd });
-        const j = await r.json();
-        if (!r.ok) throw new Error(`${files.length > 1 ? `${i + 1}번째 사진: ` : ""}${j.error}`);
+        const label = files.length > 1 ? `(${i + 1}/${files.length}장) ` : "";
+        const image = await shrink(files[i]);
+        let j: Record<string, unknown> = {};
+        // 무료 사용량의 '분당' 한도에 걸리면 안내된 시간만큼 기다렸다가 자동으로 다시 시도 (최대 3번)
+        for (let attempt = 0; ; attempt++) {
+          setBusy(`Gemini가 기록지를 읽는 중… ${label}20~40초`);
+          const fd = new FormData();
+          fd.append("image", image, "scan.jpg");
+          fd.append("date", date);
+          const r = await fetch("/api/ocr", { method: "POST", body: fd });
+          j = await r.json().catch(() => ({ error: `서버 오류 (${r.status})` }));
+          if (r.ok) break;
+          if (r.status === 429 && j.quota && !j.daily && attempt < 3) {
+            const wait = Math.min(90, Number(j.retryAfter) || 30) + 2;
+            for (let s = wait; s > 0; s--) {
+              setBusy(`Gemini 무료 사용량 한도에 걸려 잠시 기다리는 중… ${label}${s}초 뒤 자동으로 다시 읽습니다`);
+              await new Promise((res) => setTimeout(res, 1000));
+            }
+            continue;
+          }
+          throw new Error(`${files.length > 1 ? `${i + 1}번째 사진: ` : ""}${j.error}`);
+        }
         const total = parseInt(String(j.total_text).replace(/\D/g, ""), 10);
         ocrs.push({
           rows: j.rows as RawRow[],
-          imagePath: j.imagePath ?? null,
+          imagePath: (j.imagePath as string | null) ?? null,
           localUrl: URL.createObjectURL(files[i]),
           total: Number.isFinite(total) ? total : null,
         });
-        if (!dateText && j.date_text) dateText = j.date_text;
+        if (!dateText && j.date_text) dateText = String(j.date_text);
       }
     } catch (e) {
       setBusy(null);

@@ -83,16 +83,59 @@ async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType
   }
 }
 
+/** 사용량 한도(429)에 걸렸을 때. retryAfter = 다시 시도해도 되는 초 */
+export class QuotaError extends Error {
+  constructor(public retryAfter: number, public daily: boolean) {
+    super(daily ? "Gemini 오늘 사용량 한도를 다 썼습니다." : "Gemini 분당 사용량 한도에 걸렸습니다.");
+  }
+}
+
+function quotaInfo(e: unknown): { retryAfter: number; daily: boolean } | null {
+  const msg = String((e as { message?: string })?.message ?? e);
+  const status = (e as { status?: number })?.status;
+  if (status !== 429 && !/RESOURCE_EXHAUSTED|"code":\s*429|quota/i.test(msg)) return null;
+  const m = msg.match(/retry in ([\d.]+)s/i) ?? msg.match(/"retryDelay":\s*"(\d+)s"/);
+  const daily = /PerDay|per day|RPD/i.test(msg);
+  return { retryAfter: m ? Math.ceil(Number(m[1])) : 30, daily };
+}
+
+/**
+ * 쓸 모델 순서. 한도는 모델마다 따로라서, 앞 모델이 한도에 걸리면 다음 모델로 넘어간다.
+ * GEMINI_MODEL(기본 최신 Flash) → GEMINI_FALLBACK_MODELS(쉼표 구분)
+ */
+function modelChain(): string[] {
+  const main = process.env.GEMINI_MODEL || "gemini-flash-latest";
+  const fallbacks = (process.env.GEMINI_FALLBACK_MODELS ?? "gemini-3.6-flash,gemini-3.5-flash-lite")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  return [...new Set([main, ...fallbacks])];
+}
+
 /**
  * 기록지 한 장 읽기.
  * 120칸을 한 번에 읽으면 뒤쪽 정확도가 떨어져서 1~60 / 61~120 두 번으로 나눠 동시에 요청한다.
+ * 한도에 걸리면 다음 모델로, 모든 모델이 막히면 QuotaError.
  */
 export async function readPage(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 환경변수가 없습니다.");
-  const model = process.env.GEMINI_MODEL || "gemini-flash-latest";
   const ai = new GoogleGenAI({ apiKey });
 
+  let lastQuota: { retryAfter: number; daily: boolean } | null = null;
+  for (const model of modelChain()) {
+    try {
+      return await readWithModel(ai, model, imageBase64, mimeType, companies);
+    } catch (e) {
+      const q = quotaInfo(e);
+      const missing = /not found|is not supported|404/i.test(String((e as Error)?.message));
+      if (!q && !missing) throw e;           // 한도·없는 모델이 아닌 오류는 그대로
+      if (q) lastQuota = !lastQuota || q.retryAfter < lastQuota.retryAfter ? q : lastQuota;
+      console.warn(`[gemini] ${model} 건너뜀: ${q ? "사용량 한도" : "모델 없음"}`);
+    }
+  }
+  throw new QuotaError(lastQuota?.retryAfter ?? 30, lastQuota?.daily ?? false);
+}
+
+async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   const [a, b] = await Promise.all([
     readRange(ai, model, imageBase64, mimeType, companies, 1, 60),
     readRange(ai, model, imageBase64, mimeType, companies, 61, 120),
