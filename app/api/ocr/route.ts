@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { QuotaError } from "@/lib/gemini";
-import { readPage } from "@/lib/ocr";
+import { OcrFailed, readPage } from "@/lib/ocr";
 import { db } from "@/lib/supabase";
 import { currentSite, handle, HttpError } from "@/lib/access";
 
@@ -27,15 +26,7 @@ export async function POST(req: NextRequest) {
     try {
       page = await readPage(bytes.toString("base64"), mimeType, companies);
     } catch (e) {
-      if (e instanceof QuotaError) {
-        // 화면이 이 값을 보고 기다렸다가 자동으로 다시 시도함
-        return NextResponse.json({
-          error: e.daily
-            ? "Gemini 무료 사용량을 오늘 다 썼습니다. 한국시간 오후 4~5시(미국 서부 자정)에 초기화됩니다. 계속 쓰려면 Gemini 결제를 연결해 한도를 늘리세요."
-            : `Gemini 무료 사용량 한도(1분당 요청 수)에 걸렸습니다. ${e.retryAfter}초 뒤 다시 시도합니다.`,
-          quota: true, daily: e.daily, retryAfter: e.retryAfter,
-        }, { status: 429 });
-      }
+      if (e instanceof OcrFailed) return NextResponse.json({ error: e.message }, { status: 502 });
       throw e;
     }
 

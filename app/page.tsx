@@ -148,26 +148,14 @@ function Editor() {
       for (let i = 0; i < files.length; i++) {
         const label = files.length > 1 ? `(${i + 1}/${files.length}장) ` : "";
         const image = await shrink(files[i]);
-        let j: Record<string, unknown> = {};
-        // 무료 사용량의 '분당' 한도에 걸리면 안내된 시간만큼 기다렸다가 자동으로 다시 시도 (최대 3번)
-        for (let attempt = 0; ; attempt++) {
-          setBusy(`Gemini가 기록지를 읽는 중… ${label}20~40초`);
-          const fd = new FormData();
-          fd.append("image", image, "scan.jpg");
-          fd.append("date", date);
-          const r = await fetch("/api/ocr", { method: "POST", body: fd });
-          j = await r.json().catch(() => ({ error: `서버 오류 (${r.status})` }));
-          if (r.ok) break;
-          if (r.status === 429 && j.quota && !j.daily && attempt < 3) {
-            const wait = Math.min(90, Number(j.retryAfter) || 30) + 2;
-            for (let s = wait; s > 0; s--) {
-              setBusy(`Gemini 무료 사용량 한도에 걸려 잠시 기다리는 중… ${label}${s}초 뒤 자동으로 다시 읽습니다`);
-              await new Promise((res) => setTimeout(res, 1000));
-            }
-            continue;
-          }
-          throw new Error(`${files.length > 1 ? `${i + 1}번째 사진: ` : ""}${j.error}`);
-        }
+        // 서버가 Gemini → (실패 시) Claude 순서로 한 번씩만 시도함. 둘 다 실패하면 이유를 바로 보여 줌
+        setBusy(`기록지를 읽는 중… ${label}20~40초 (Gemini가 안 되면 Claude가 이어서 읽어요)`);
+        const fd = new FormData();
+        fd.append("image", image, "scan.jpg");
+        fd.append("date", date);
+        const r = await fetch("/api/ocr", { method: "POST", body: fd });
+        const j: Record<string, unknown> = await r.json().catch(() => ({ error: `서버 오류 (${r.status})` }));
+        if (!r.ok) throw new Error(`${files.length > 1 ? `${i + 1}번째 사진: ` : ""}${j.error}`);
         const total = parseInt(String(j.total_text).replace(/\D/g, ""), 10);
         ocrs.push({
           rows: j.rows as RawRow[],

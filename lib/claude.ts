@@ -30,14 +30,16 @@ const TOOL = {
   },
 };
 
-export const claudeAvailable = () => !!process.env.ANTHROPIC_API_KEY;
+/** 붙여넣을 때 섞인 공백·줄바꿈·따옴표 제거 */
+const apiKey = () => String(process.env.ANTHROPIC_API_KEY ?? "").trim().replace(/^["']|["']$/g, "");
+export const claudeAvailable = () => !!apiKey();
 
 async function readRange(image: string, mimeType: string, companies: string[], from: number, to: number): Promise<PageRead> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY!,
+      "x-api-key": apiKey(),
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
@@ -58,7 +60,12 @@ async function readRange(image: string, mimeType: string, companies: string[], f
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = j?.error?.message ?? `HTTP ${res.status}`;
-    throw new Error(`Claude 오류: ${msg}`);
+    const hint =
+      res.status === 401 ? "Claude API 키가 올바르지 않습니다. Vercel의 ANTHROPIC_API_KEY를 다시 넣어 주세요." :
+      /credit|billing|balance/i.test(msg) ? "Claude API 크레딧이 부족합니다. platform.claude.com에서 충전하세요." :
+      res.status === 429 ? "Claude 사용량 한도에 걸렸습니다." :
+      res.status === 529 || res.status >= 500 ? "Claude 서버가 잠시 바쁩니다." : "";
+    throw new Error(`${hint ? hint + " " : ""}(Claude: ${msg})`);
   }
   const block = (j.content ?? []).find((b: { type: string }) => b.type === "tool_use");
   if (!block?.input) throw new Error("Claude 응답에서 결과를 찾지 못했습니다.");
