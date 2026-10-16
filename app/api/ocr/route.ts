@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { QuotaError, readPage } from "@/lib/gemini";
+import { QuotaError } from "@/lib/gemini";
+import { readPage } from "@/lib/ocr";
 import { db } from "@/lib/supabase";
 import { currentSite, handle, HttpError } from "@/lib/access";
 

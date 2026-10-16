@@ -3,7 +3,7 @@ import type { RawRow } from "./form";
 
 export type PageRead = { date_text: string; total_text: string; rows: RawRow[] };
 
-function prompt(companies: string[], from: number, to: number) {
+export function ocrPrompt(companies: string[], from: number, to: number) {
   return `이 사진은 손으로 쓴 '폐기물 반출 현황' 기록지입니다.
 
 [양식]
@@ -60,7 +60,7 @@ async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType
   companies: string[], from: number, to: number): Promise<PageRead> {
   const res = await ai.models.generateContent({
     model,
-    contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: image } }, { text: prompt(companies, from, to) }] }],
+    contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: image } }, { text: ocrPrompt(companies, from, to) }] }],
     config: {
       temperature: 0,
       mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
@@ -70,14 +70,7 @@ async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType
   });
   const text = res.text ?? "";
   try {
-    const p = JSON.parse(text) as PageRead;
-    // 장 안에서의 위치(1~120)로 범위를 확인 — 두 번째 장의 121~240 번호도 받아들임
-    const pos = (s: number) => ((s - 1) % 120) + 1;
-    p.rows = (p.rows ?? []).filter((r) => {
-      const s = Number(r.seq);
-      return Number.isInteger(s) && s > 0 && pos(s) >= from && pos(s) <= to;
-    });
-    return p;
+    return keepRange(JSON.parse(text) as PageRead, from, to);
   } catch {
     throw new Error("Gemini 응답을 해석하지 못했습니다: " + text.slice(0, 200));
   }
@@ -115,7 +108,7 @@ function modelChain(): string[] {
  * 120칸을 한 번에 읽으면 뒤쪽 정확도가 떨어져서 1~60 / 61~120 두 번으로 나눠 동시에 요청한다.
  * 한도에 걸리면 다음 모델로, 모든 모델이 막히면 QuotaError.
  */
-export async function readPage(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
+export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 환경변수가 없습니다.");
   const ai = new GoogleGenAI({ apiKey });
@@ -140,6 +133,24 @@ async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string
     readRange(ai, model, imageBase64, mimeType, companies, 1, 60),
     readRange(ai, model, imageBase64, mimeType, companies, 61, 120),
   ]);
+  return mergeHalves(a, b);
+}
+
+/** 장 안에서의 위치(1~120)로 범위를 확인 — 두 번째 장의 121~240 번호도 받아들임 */
+export function keepRange(p: PageRead, from: number, to: number): PageRead {
+  const pos = (s: number) => ((s - 1) % 120) + 1;
+  return {
+    date_text: String(p.date_text ?? ""),
+    total_text: String(p.total_text ?? ""),
+    rows: (p.rows ?? []).filter((r) => {
+      const s = Number(r.seq);
+      return Number.isInteger(s) && s > 0 && pos(s) >= from && pos(s) <= to;
+    }),
+  };
+}
+
+/** 왼쪽 절반(1~60)·오른쪽 절반(61~120) 결과 합치기 */
+export function mergeHalves(a: PageRead, b: PageRead): PageRead {
   const bySeq = new Map<number, RawRow>();
   [...a.rows, ...b.rows].forEach((r) => bySeq.set(Number(r.seq), r));
   return {

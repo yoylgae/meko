@@ -7,7 +7,7 @@ import {
 } from "@/lib/form";
 
 type Field = "vehicle_no" | "company" | "out_time";
-type OcrResult = { rows: RawRow[]; imagePath: string | null; localUrl: string; total: number | null; note?: string };
+type OcrResult = { rows: RawRow[]; imagePath: string | null; localUrl: string; total: number | null; engine?: string; note?: string };
 
 const today = () => {
   const d = new Date();
@@ -117,7 +117,9 @@ function Editor() {
     setDirty(true);
     const pages = perPage.length > 1 ? ` (${perPage.map((n, i) => `${i + 1}장 ${n}건`).join(", ")})` : "";
     const sum = perPage.reduce((a, b) => a + b, 0);
-    setMsg({ text: `${sum}건을 읽었습니다${pages}.${nCheck ? ` 노란 칸 ${nCheck}개를 사진과 비교해 확인해 주세요.` : ""}${note}` });
+    const viaClaude = ocrs.some((o) => o.engine === "claude")
+      ? ` (Gemini 오류로 Claude가 대신 읽었습니다${ocrs.length > 1 ? ` — ${ocrs.map((o, i) => o.engine === "claude" ? `${i + 1}장` : "").filter(Boolean).join(", ")}` : ""})` : "";
+    setMsg({ text: `${sum}건을 읽었습니다${pages}${viaClaude}.${nCheck ? ` 노란 칸 ${nCheck}개를 사진과 비교해 확인해 주세요.` : ""}${note}` });
   }
 
   // 저장 안 하고 나가려 할 때 경고
@@ -172,6 +174,7 @@ function Editor() {
           imagePath: (j.imagePath as string | null) ?? null,
           localUrl: URL.createObjectURL(files[i]),
           total: Number.isFinite(total) ? total : null,
+          engine: String(j.engine ?? "gemini"),
         });
         if (!dateText && j.date_text) dateText = String(j.date_text);
       }
