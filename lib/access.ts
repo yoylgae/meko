@@ -68,13 +68,25 @@ export async function memberSites(userId: string): Promise<Site[]> {
     .sort((a, b) => a.name.localeCompare(b.name, "ko"));
 }
 
+/** 운영 중인 전체 현장 */
+export async function allSites(): Promise<Site[]> {
+  const { data, error } = await db().from("sites").select("id, name, active").eq("active", true);
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as Site[]).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+}
+
+/** 이 계정이 열 수 있는 현장: 관리자는 전체, 담당자는 배정된 현장 */
+export async function accessibleSites(p: Profile): Promise<Site[]> {
+  return p.role === "admin" ? allSites() : memberSites(p.user_id);
+}
+
 /**
- * 지금 작업 중인 현장. 배정된 현장 중 쿠키로 고른 것(없으면 첫 번째).
- * 모든 기록 API는 이걸 거쳐서, 배정 안 된 현장 데이터에는 절대 닿지 않는다.
+ * 지금 작업 중인 현장. 열 수 있는 현장 중 쿠키로 고른 것(없으면 첫 번째).
+ * 모든 기록 API는 이걸 거쳐서, 권한 없는 현장 데이터에는 절대 닿지 않는다.
  */
 export async function currentSite(req: NextRequest): Promise<{ user: Profile; site: Site; sites: Site[] }> {
   const user = await activeUser(req);
-  const sites = await memberSites(user.user_id);
+  const sites = await accessibleSites(user);
   if (!sites.length) throw new HttpError(403, "배정된 현장이 없습니다. 관리자에게 현장 배정을 요청하세요.");
   const want = Number(req.cookies.get(SITE_COOKIE)?.value);
   const site = sites.find((s) => s.id === want) ?? sites[0];

@@ -63,7 +63,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const isAdmin = me?.user.role === "admin";
   const current = me?.sites.find((s) => s.id === me.siteId);
   const blockSitePage = me && active && !hasSites && SITE_PAGES.includes(path) && !isAdmin;
-  const blockAdmin = me && path.startsWith("/admin") && !(active && isAdmin);
+  const blockAdmin = me && (path.startsWith("/admin") || path === "/overview") && !(active && isAdmin);
 
   return (
     <MeContext.Provider value={{ me, reload: load }}>
@@ -84,7 +84,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             <Link href="/history" className={path === "/history" ? "on" : ""}>기록</Link>
             <Link href="/settings" className={path === "/settings" ? "on" : ""}>업체</Link>
           </>}
-          {active && isAdmin && <Link href="/admin" className={path.startsWith("/admin") ? "on" : ""}>관리</Link>}
+          {active && isAdmin && <>
+            <Link href="/overview" className={path === "/overview" ? "on" : ""}>전체 현황</Link>
+            <Link href="/admin" className={path.startsWith("/admin") ? "on" : ""}>관리</Link>
+          </>}
           {me && (
             <span className="user-menu">
               <button className="icon user-btn" onClick={() => setMenu(!menu)} aria-expanded={menu}>

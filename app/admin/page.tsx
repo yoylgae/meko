@@ -76,7 +76,7 @@ export default function Admin() {
   return (
     <>
       <h1>관리</h1>
-      <p className="sub">가입 승인과 현장 배정을 합니다. 각 현장의 기록은 그 현장에 배정된 사람만 볼 수 있어요.</p>
+      <p className="sub">가입 승인과 현장 배정을 합니다. 담당자는 배정된 현장만, 관리자는 모든 현장을 볼 수 있어요.</p>
 
       <div className="tabs">
         <button className={tab === "users" ? "" : "ghost"} onClick={() => setTab("users")}>
