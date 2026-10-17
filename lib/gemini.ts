@@ -1,4 +1,5 @@
 import { GoogleGenAI, MediaResolution, ThinkingLevel, Type } from "@google/genai";
+import sharp from "sharp";
 import type { RawRow } from "./form";
 
 export type PageRead = { date_text: string; total_text: string; rows: RawRow[] };
@@ -56,50 +57,171 @@ const schema = {
   propertyOrdering: ["date_text", "total_text", "rows"],
 };
 
-/** GEMINI_THINKING=low|medium|high (기본 low) */
-function thinkingLevel(): ThinkingLevel {
-  const v = String(process.env.GEMINI_THINKING ?? "low").trim().toLowerCase();
+type Level = "low" | "medium" | "high";
+function level(env: string | undefined, dflt: Level): ThinkingLevel {
+  const v = String(env ?? dflt).trim().toLowerCase();
   return v === "high" ? ThinkingLevel.HIGH : v === "medium" ? ThinkingLevel.MEDIUM : ThinkingLevel.LOW;
 }
 
-async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType: string,
-  companies: string[], from: number, to: number): Promise<PageRead> {
+/** Gemini 호출 1번: 사진+안내문 → 스키마대로 JSON. 진단용으로 사용량을 로그에 남김 */
+async function callJson<T>(ai: GoogleGenAI, model: string, label: string, image: string, mimeType: string,
+  text: string, responseSchema: object, thinking: ThinkingLevel): Promise<T> {
+  const t0 = Date.now();
   const res = await ai.models.generateContent({
     model,
-    contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: image } }, { text: ocrPrompt(companies, from, to) }] }],
+    contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: image } }, { text }] }],
     config: {
       temperature: 0,
-      maxOutputTokens: 32768, // 생각(thinking) 토큰까지 포함해도 표 60줄이 잘리지 않게
-      // 손글씨 옮겨 적기는 깊은 추론이 필요 없음. 기본(medium)이면 생각에 1분 넘게·크레딧 4배를 써서 시간 초과가 남
-      thinkingConfig: { thinkingLevel: thinkingLevel() },
+      maxOutputTokens: 32768, // 생각(thinking) 토큰까지 포함해도 결과가 잘리지 않게
+      thinkingConfig: { thinkingLevel: thinking },
       mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
       responseMimeType: "application/json",
-      responseSchema: schema,
+      responseSchema,
     },
   });
-  const text = res.text ?? "";
+  const out = res.text ?? "";
   const cand = res.candidates?.[0];
-  let parsed: PageRead | null = null;
-  try { parsed = JSON.parse(text) as PageRead; } catch { /* 아래에서 처리 */ }
-  const kept = parsed ? keepRange(parsed, from, to) : null;
-
-  // 진단용 기록: 어떤 모델이 무엇을 얼마나 돌려줬는지 (Vercel 로그에서 확인)
+  let parsed: T | null = null;
+  try { parsed = JSON.parse(out) as T; } catch { /* 아래에서 처리 */ }
+  const u = res.usageMetadata;
   console.log("[gemini]", JSON.stringify({
-    model, range: `${from}-${to}`,
-    finish: cand?.finishReason, block: res.promptFeedback?.blockReason,
-    usage: res.usageMetadata ? {
-      in: res.usageMetadata.promptTokenCount, out: res.usageMetadata.candidatesTokenCount,
-      think: res.usageMetadata.thoughtsTokenCount, total: res.usageMetadata.totalTokenCount,
-    } : null,
-    textLen: text.length, rawRows: parsed?.rows?.length ?? null, keptRows: kept?.rows.length ?? null,
-    date: parsed?.date_text, sample: parsed?.rows?.slice(0, 2),
+    model, label, ms: Date.now() - t0, finish: cand?.finishReason, block: res.promptFeedback?.blockReason,
+    usage: u ? { in: u.promptTokenCount, out: u.candidatesTokenCount, think: u.thoughtsTokenCount, total: u.totalTokenCount } : null,
+    rows: (parsed as { rows?: unknown[] } | null)?.rows?.length ?? null,
   }));
-
-  if (!kept) {
+  if (parsed === null) {
     if (cand?.finishReason === "MAX_TOKENS") throw new Error("Gemini 응답이 길이 제한에 걸려 잘렸습니다.");
-    throw new Error(`Gemini 응답을 해석하지 못했습니다 (${cand?.finishReason ?? "?"}): ` + text.slice(0, 200));
+    throw new Error(`Gemini 응답을 해석하지 못했습니다 (${cand?.finishReason ?? "?"}): ` + out.slice(0, 200));
   }
-  return kept;
+  return parsed;
+}
+
+/** 사진 전체에서 번호 범위 읽기 (묶음 자르기가 안 될 때 쓰는 예전 방식) */
+async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType: string,
+  companies: string[], from: number, to: number): Promise<PageRead> {
+  const p = await callJson<PageRead>(ai, model, `whole ${from}-${to}`, image, mimeType,
+    ocrPrompt(companies, from, to), schema, level(process.env.GEMINI_THINKING, "low"));
+  return keepRange(p, from, to);
+}
+
+// ── 묶음 6개로 잘라 읽기 ───────────────────────────────────────────
+
+type Box = [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0~1000
+type Layout = { date_text: string; total_text: string; blocks: { group: number; box_2d: number[] }[] };
+
+const layoutSchema = {
+  type: Type.OBJECT,
+  properties: {
+    date_text: { type: Type.STRING },
+    total_text: { type: Type.STRING },
+    blocks: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: { group: { type: Type.INTEGER }, box_2d: { type: Type.ARRAY, items: { type: Type.INTEGER } } },
+        required: ["group", "box_2d"],
+        propertyOrdering: ["group", "box_2d"],
+      },
+    },
+  },
+  required: ["date_text", "total_text", "blocks"],
+  propertyOrdering: ["date_text", "total_text", "blocks"],
+};
+
+const LAYOUT_PROMPT = `이 사진은 손으로 쓴 '폐기물 반출 현황' 기록지입니다.
+표는 [번호 | 차량번호 | 업체 | 출차시간] 4칸짜리 묶음이 가로로 6개 나란히 있고, 묶음마다 20줄입니다.
+각 묶음의 위치를 box_2d = [ymin, xmin, ymax, xmax] (사진 전체를 0~1000으로 본 좌표)로 알려 주세요.
+- 상자는 그 묶음의 머리글(번호·차량번호·업체·출차시간)부터 마지막 20번째 줄까지, 4칸 전체를 빠짐없이 덮게 하세요.
+- 사진이 기울었거나 돌아가 있어도 실제 보이는 위치 그대로 적으세요.
+- group은 번호가 작은 묶음부터 1~6 (1묶음 = 번호 1~20 … 6묶음 = 번호 101~120).
+또 오른쪽 위 '월일' 칸 값을 date_text(예: "10/15"), '총댓수' 칸 값을 total_text로 적으세요. 없으면 "".`;
+
+function blockPrompt(companies: string[], group: number) {
+  const from = (group - 1) * 20 + 1, to = group * 20;
+  return `이 사진은 손으로 쓴 '폐기물 반출 현황' 기록지에서 잘라낸 한 묶음입니다.
+묶음은 [번호 | 차량번호 | 업체 | 출차시간] 4칸 × 20줄이고, 이 묶음의 번호는 ${from}~${to}입니다
+(하루 120대가 넘어 쓴 두 번째 장이면 ${from + 120}~${to + 120}). 가장자리에 옆 묶음이 조금 보이면 무시하세요.
+
+차량번호가 적힌 줄만 위에서부터 번호 순서대로 읽으세요. 빈 줄은 건너뜁니다.
+
+[각 칸을 적는 법 — 해석하지 말고 보이는 그대로]
+- seq: 인쇄된 번호(숫자).
+- vehicle: 차량번호 숫자 4자리. 애매한 숫자는 가장 그럴듯한 숫자를 쓰고 끝에 '?'를 붙이세요.
+- company: 업체명. 위 칸과 같다는 표시(〃, 11처럼 보이는 두 줄, 7·ㄱ처럼 보이는 꺾쇠)는 반드시 "〃" 로 적으세요.
+  업체는 보통 다음 중 하나입니다: ${companies.join(", ")}.
+  흘려 쓴 글씨는 이 목록에서 가장 가까운 이름으로 적되, 목록에 없는 게 확실하면 보이는 대로 적으세요.
+- time: 출차시간을 적힌 그대로. '06:08'처럼 시:분이 다 있으면 그대로, 분만 적혀 있으면 '11'처럼 분 숫자만,
+  ':48'처럼 콜론과 분만 있으면 ':48'. 시를 추측해서 채우지 마세요.
+- date_text, total_text는 빈 문자열로 두세요.`;
+}
+
+/** 묶음 위치 6개가 그럴듯하면 왼쪽부터 정렬해서 돌려줌, 아니면 null */
+function validBoxes(layout: Layout): Box[] | null {
+  const boxes = (layout.blocks ?? [])
+    .map((b) => b.box_2d)
+    .filter((b): b is Box => Array.isArray(b) && b.length === 4 && b.every((n) => Number.isFinite(n)))
+    .map((b) => b.map((n) => Math.max(0, Math.min(1000, n))) as Box)
+    .filter(([y0, x0, y1, x1]) => y1 - y0 > 150 && x1 - x0 > 40 && x1 - x0 < 400);
+  if (boxes.length !== 6) return null;
+  return boxes.sort((a, b) => a[1] - b[1]);
+}
+
+/** 사진에서 상자 부분을 여유를 두고 잘라 JPEG base64로 (작으면 키워서 글씨가 잘 보이게) */
+async function crop(buf: Buffer, box: Box): Promise<string> {
+  const img = sharp(buf);
+  const { width = 0, height = 0 } = await img.metadata();
+  const [y0, x0, y1, x1] = box;
+  const padX = (x1 - x0) * 0.08, padY = 15;
+  const left = Math.max(0, Math.floor(((x0 - padX) / 1000) * width));
+  const top = Math.max(0, Math.floor(((y0 - padY) / 1000) * height));
+  const right = Math.min(width, Math.ceil(((x1 + padX) / 1000) * width));
+  const bottom = Math.min(height, Math.ceil(((y1 + padY) / 1000) * height));
+  let out = sharp(buf).extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) });
+  if (bottom - top < 1600) out = out.resize({ height: 1600 });
+  return (await out.jpeg({ quality: 92 }).toBuffer()).toString("base64");
+}
+
+/**
+ * 묶음 6개 방식: 위치 찾기(1번) → 6조각 동시에 읽기.
+ * 위치를 못 찾으면 null(예전 방식으로). 한 조각이 두 번 실패하면 그 번호 범위만 사진 전체에서 읽음.
+ */
+async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string,
+  companies: string[]): Promise<PageRead | null> {
+  let layout: Layout;
+  try {
+    layout = await callJson<Layout>(ai, model, "layout", imageBase64, mimeType, LAYOUT_PROMPT, layoutSchema, ThinkingLevel.LOW);
+  } catch (e) {
+    if (quotaInfo(e)) throw e;
+    console.warn("[gemini] 묶음 위치 찾기 실패 → 예전 방식:", String((e as Error)?.message).slice(0, 150));
+    return null;
+  }
+  const boxes = validBoxes(layout);
+  if (!boxes) {
+    console.warn("[gemini] 묶음 위치가 이상함 → 예전 방식:", JSON.stringify(layout.blocks).slice(0, 300));
+    return null;
+  }
+
+  const buf = Buffer.from(imageBase64, "base64");
+  const thinking = level(process.env.GEMINI_BLOCK_THINKING, "medium");
+  const readGroup = async (g: number): Promise<RawRow[]> => {
+    const from = (g - 1) * 20 + 1, to = g * 20;
+    const piece = await crop(buf, boxes[g - 1]);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g), schema, thinking);
+        return keepRange(p, from, to).rows;
+      } catch (e) {
+        if (quotaInfo(e)) throw e;
+        console.warn(`[gemini] block${g} 실패(${attempt}):`, String((e as Error)?.message).slice(0, 150));
+      }
+    }
+    return (await readRange(ai, model, imageBase64, mimeType, companies, from, to)).rows; // 마지막 수단
+  };
+  const groups = await Promise.all([1, 2, 3, 4, 5, 6].map(readGroup));
+  return mergeHalves(
+    { date_text: String(layout.date_text ?? ""), total_text: String(layout.total_text ?? ""), rows: groups.flat() },
+    { date_text: "", total_text: "", rows: [] },
+  );
 }
 
 /** 사용량 한도(429)에 걸렸을 때. retryAfter = 다시 시도해도 되는 초 */
@@ -131,7 +253,8 @@ function modelChain(): string[] {
 
 /**
  * 기록지 한 장 읽기.
- * 120칸을 한 번에 읽으면 뒤쪽 정확도가 떨어져서 1~60 / 61~120 두 번으로 나눠 동시에 요청한다.
+ * 기본: 묶음 6개 위치를 찾아 잘라서 20줄씩 동시에 읽음(작게 잘라 글씨가 크게 보이고, 한 번에 읽는 양이 적어 빠름).
+ * 위치를 못 찾으면 예전처럼 1~60 / 61~120 두 번으로 나눠 읽음.
  * 한도에 걸리면 다음 모델로, 모든 모델이 막히면 QuotaError.
  */
 export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
@@ -159,7 +282,11 @@ export async function readPageGemini(imageBase64: string, mimeType: string, comp
 }
 
 async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
-  // 왼쪽·오른쪽 절반을 동시에. 한쪽만 실패하면(한도 제외) 그쪽만 한 번 더 읽음
+  if (process.env.GEMINI_BLOCKS !== "off") {
+    const byBlocks = await readByBlocks(ai, model, imageBase64, mimeType, companies);
+    if (byBlocks) return byBlocks;
+  }
+  // 예전 방식: 왼쪽·오른쪽 절반을 동시에. 한쪽만 실패하면(한도 제외) 그쪽만 한 번 더 읽음
   const half = (from: number, to: number) => readRange(ai, model, imageBase64, mimeType, companies, from, to);
   const once = async (from: number, to: number) => {
     try {
