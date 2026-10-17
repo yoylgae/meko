@@ -186,3 +186,33 @@ table.grid { border-collapse: collapse; width: 100%; }
 .rot-box { position: relative; width: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--head); }
 .rot-box img { position: absolute; left: 50%; top: 50%; max-width: none; border: none; margin: 0; border-radius: 0;
   transform-origin: center center; transition: transform .12s ease-out; user-select: none; }
+
+/* ── 엑셀식 표 ── */
+.xgrid { position: relative; }
+.xgrid-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.xgrid-info { font-size: 12px; color: var(--muted); margin-left: auto; }
+table.xg { user-select: none; -webkit-user-select: none; table-layout: fixed; }
+.xg th { position: sticky; top: 0; z-index: 2; }
+.xg th:not(.idx) { width: 33%; }
+.xg td { position: relative; height: 32px; border-right: 1px solid var(--line); cursor: cell; }
+.xg td.idx { cursor: pointer; }
+.xg td.idx.hl { background: color-mix(in srgb, var(--accent) 18%, var(--head)); color: var(--ink); }
+.xg .cell { padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; min-height: 31px; }
+.xg td.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.xg td.doubt.sel { background: color-mix(in srgb, var(--accent) 14%, var(--warn-bg)); }
+.xg td.cur { outline: 2px solid var(--accent); outline-offset: -2px; z-index: 1; }
+.xg td.fill { background: color-mix(in srgb, var(--accent) 8%, transparent); outline: 1px dashed var(--accent); outline-offset: -1px; }
+.xg tr.ghost td:not(.idx) .cell { color: var(--muted); }
+.xg tr.ghost td.idx { color: var(--accent); font-weight: 700; }
+.xg .editor { position: absolute; inset: 0; width: 100%; height: 100%; border: none; border-radius: 0; padding: 6px 8px;
+  background: transparent; color: transparent; caret-color: transparent; opacity: 0; font-variant-numeric: tabular-nums; }
+.xg .editor.on { opacity: 1; background: var(--card); color: var(--ink); caret-color: auto; outline: 2px solid var(--accent); outline-offset: -2px; box-shadow: 0 2px 8px rgba(0,0,0,.15); z-index: 3; }
+.xg .fill-handle { position: absolute; right: -4px; bottom: -4px; width: 8px; height: 8px; background: var(--accent);
+  border: 1.5px solid var(--card); cursor: crosshair; z-index: 4; touch-action: none; }
+.xgrid .ctx { position: fixed; z-index: 50; min-width: 190px; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; display: flex; flex-direction: column; }
+.xgrid .ctx button { background: none; border: none; color: var(--ink); text-align: left; padding: 7px 10px; border-radius: 6px; font-size: 14px;
+  display: flex; justify-content: space-between; gap: 12px; }
+.xgrid .ctx button:hover:not(:disabled) { background: var(--bg); }
+.xgrid .ctx kbd { font: inherit; font-size: 11px; color: var(--muted); }
+.xgrid .ctx hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }

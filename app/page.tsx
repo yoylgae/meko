@@ -2,12 +2,12 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import RotatableImage from "./RotatableImage";
+import Grid, { type GridHandle } from "./Grid";
 import {
-  normalizeRows, parseFormDate, parseTime, koreanDate, timeToMinutes,
+  normalizeRows, parseFormDate, koreanDate, timeToMinutes,
   type Company, type EditRow, type RawRow,
 } from "@/lib/form";
 
-type Field = "vehicle_no" | "company" | "out_time";
 type OcrResult = { rows: RawRow[]; imagePath: string | null; localUrl: string; total: number | null; note?: string };
 
 const today = () => {
@@ -41,6 +41,7 @@ function Editor() {
   const [msg, setMsg] = useState<{ text: string; err?: boolean } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const camRef = useRef<HTMLInputElement>(null);
+  const gridRef = useRef<GridHandle>(null);
 
   const names = useMemo(() => companies.map((c) => c.name), [companies]);
 
@@ -188,38 +189,6 @@ function Editor() {
     applyOcr({ rows, imagePaths, images, writtenTotal }, ocrs, note);
   };
 
-  const update = (i: number, f: Field, v: string) => {
-    setRows((rs) => rs.map((r, j) => {
-      if (j !== i) return r;
-      const check = { ...(r.check ?? {}) };
-      delete check[f];
-      // 업체는 등록된 이름만 — 목록에 없는 이름을 입력하면 노란 칸으로 표시
-      if (f === "company" && v.trim() && names.length && !names.includes(v.trim())) {
-        check.company = "등록되지 않은 업체 — 목록에서 고르거나 '업체' 화면에서 먼저 추가하세요";
-      }
-      return { ...r, [f]: v, check };
-    }));
-    setDirty(true);
-  };
-  /** 시간 칸에서 분만 입력하면 위 행의 시를 붙여 줌 */
-  const fixTime = (i: number) => {
-    const v = rows[i].out_time;
-    if (/^\d{1,2}:\d{2}$/.test(v) || !v) return;
-    const prev = i > 0 ? timeToMinutes(rows[i - 1].out_time) : null;
-    const t = parseTime(v, prev === null ? null : { h: Math.floor(prev / 60), m: prev % 60 });
-    if (t) update(i, "out_time", t.value);
-  };
-  const insertBelow = (i: number) => {
-    const r = rows[i];
-    setRows([...rows.slice(0, i + 1), { seq: r.seq + 0.5, vehicle_no: "", company: r.company, out_time: "" }, ...rows.slice(i + 1)]
-      .map((x, k) => ({ ...x, seq: k + 1 })));
-    setDirty(true);
-  };
-  const remove = (i: number) => {
-    setRows(rows.filter((_, j) => j !== i).map((x, k) => ({ ...x, seq: k + 1 })));
-    setDirty(true);
-  };
-
   const save = async () => {
     setBusy("저장 중…");
     const r = await fetch(`/api/reports/${date}`, {
@@ -251,11 +220,7 @@ function Editor() {
   const nCheck = rows.reduce((a, r) => a + Object.keys(r.check ?? {}).length, 0);
   const unknown = [...tally.keys()].filter((n) => !names.includes(n));
 
-  const jumpToCheck = () => {
-    const el = document.querySelector<HTMLInputElement>("td.doubt input");
-    el?.focus();
-    el?.scrollIntoView({ block: "center" });
-  };
+  const jumpToCheck = () => gridRef.current?.jumpToNextCheck();
 
   return (
     <>
@@ -295,43 +260,8 @@ function Editor() {
         )}
 
         <section className="card table-card">
-          <div className="table-wrap">
-            <table className="grid">
-              <thead>
-                <tr><th className="idx">연번</th><th>차량번호</th><th>업체</th><th>시간</th><th className="act" /></tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
-                    <td className="idx">{r.seq}</td>
-                    {(["vehicle_no", "company", "out_time"] as Field[]).map((f) => (
-                      <td key={f} className={r.check?.[f] ? "doubt" : ""} title={r.check?.[f] ?? ""}>
-                        <input
-                          value={r[f]}
-                          inputMode={f === "company" ? "text" : "numeric"}
-                          list={f === "company" ? "company-list" : undefined}
-                          onChange={(e) => update(i, f, e.target.value)}
-                          onBlur={f === "out_time" ? () => fixTime(i) : undefined}
-                          aria-label={`${r.seq}번 ${f === "vehicle_no" ? "차량번호" : f === "company" ? "업체" : "시간"}`}
-                        />
-                      </td>
-                    ))}
-                    <td className="act">
-                      <button className="icon" title="아래에 행 추가" onClick={() => insertBelow(i)}>＋</button>
-                      <button className="icon" title="행 삭제" onClick={() => remove(i)}>×</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <datalist id="company-list">{names.map((n) => <option key={n} value={n} />)}</datalist>
-            {!rows.length && <p className="empty">아직 행이 없습니다. 기록지를 촬영하거나 직접 추가하세요.</p>}
-            <button className="ghost small" onClick={() => {
-              const last = rows[rows.length - 1];
-              setRows([...rows, { seq: rows.length + 1, vehicle_no: "", company: last?.company ?? "", out_time: "" }]);
-              setDirty(true);
-            }}>+ 행 추가</button>
-          </div>
+          <Grid ref={gridRef} rows={rows} names={names} onChange={(rs) => { setRows(rs); setDirty(true); }} />
+          {!rows.length && <p className="empty">아직 행이 없습니다. 기록지를 촬영하거나, 맨 아래 칸에 바로 입력하거나, 엑셀에서 복사해 붙여 넣으세요.</p>}
         </section>
 
         <aside className="card tally">
