@@ -149,12 +149,14 @@ function Editor() {
         const label = files.length > 1 ? `(${i + 1}/${files.length}장) ` : "";
         const image = await shrink(files[i]);
         // 서버가 Gemini → (실패 시) Claude 순서로 한 번씩만 시도함. 둘 다 실패하면 이유를 바로 보여 줌
-        setBusy(`기록지를 읽는 중… ${label}20~40초 (Gemini가 안 되면 Claude가 이어서 읽어요)`);
+        setBusy(`기록지를 읽는 중… ${label}보통 20~40초, Gemini가 느리거나 안 되면 Claude가 이어서 읽어 최대 2~3분 걸릴 수 있어요`);
         const fd = new FormData();
         fd.append("image", image, "scan.jpg");
         fd.append("date", date);
         const r = await fetch("/api/ocr", { method: "POST", body: fd });
-        const j: Record<string, unknown> = await r.json().catch(() => ({ error: `서버 오류 (${r.status})` }));
+        const j: Record<string, unknown> = await r.json().catch(() => ({
+          error: r.status === 504 ? "인식 시간이 너무 오래 걸려 중단됐습니다. 사진을 다시 올려 주세요." : `서버 오류 (${r.status})`,
+        }));
         if (!r.ok) throw new Error(`${files.length > 1 ? `${i + 1}번째 사진: ` : ""}${j.error}`);
         const total = parseInt(String(j.total_text).replace(/\D/g, ""), 10);
         ocrs.push({

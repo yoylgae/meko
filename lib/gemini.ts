@@ -111,10 +111,14 @@ function modelChain(): string[] {
 export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 환경변수가 없습니다.");
-  const ai = new GoogleGenAI({ apiKey });
+  // 한 요청이 55초를 넘기면 끊고 다음 단계(다음 모델 또는 Claude)로 넘어감
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 55_000 } });
+  const started = Date.now();
 
   let lastQuota: { retryAfter: number; daily: boolean } | null = null;
   for (const model of modelChain()) {
+    // Gemini에 쓴 시간이 60초를 넘으면 더 기다리지 않고 Claude로 넘김
+    if (Date.now() - started > 60_000) throw new Error("Gemini 응답 지연(시간 초과)");
     try {
       return await readWithModel(ai, model, imageBase64, mimeType, companies);
     } catch (e) {

@@ -10,6 +10,7 @@ const geminiReason = (e: unknown) =>
   e instanceof QuotaError
     ? (e.daily ? "Gemini 오늘 무료 사용량 소진" : "Gemini 무료 사용량 한도(분당)")
     : /503|UNAVAILABLE|high demand/i.test(String((e as Error)?.message)) ? "Gemini 서버 혼잡"
+    : /timeout|timed out|aborted|지연/i.test(String((e as Error)?.message)) ? "Gemini 응답 지연"
     : "Gemini 오류";
 
 /**

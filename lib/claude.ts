@@ -36,6 +36,7 @@ export const claudeAvailable = () => !!apiKey();
 async function readRange(image: string, mimeType: string, companies: string[], from: number, to: number): Promise<PageRead> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
+    signal: AbortSignal.timeout(150_000), // 서버 제한(300초) 안에 끝나도록
     headers: {
       "content-type": "application/json",
       "x-api-key": apiKey(),
@@ -43,7 +44,7 @@ async function readRange(image: string, mimeType: string, companies: string[], f
     },
     body: JSON.stringify({
       model: process.env.CLAUDE_MODEL || "claude-sonnet-5-5",
-      max_tokens: 8000,
+      max_tokens: 16000,
       output_config: { format: { type: "json_schema", schema: SCHEMA } },
       messages: [{
         role: "user",

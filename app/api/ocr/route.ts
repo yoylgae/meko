@@ -4,7 +4,8 @@ import { db } from "@/lib/supabase";
 import { currentSite, handle, HttpError } from "@/lib/access";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+// Gemini(최대 약 1~2분) → Claude(최대 2분 30초)까지 기다릴 수 있게
+export const maxDuration = 300;
 
 /** 기록지 사진 1장 → Gemini가 보이는 그대로 읽은 값(정리 전). 원본 사진은 현장 폴더에 보관 */
 export async function POST(req: NextRequest) {
