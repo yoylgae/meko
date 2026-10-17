@@ -193,6 +193,10 @@ function Editor() {
       if (j !== i) return r;
       const check = { ...(r.check ?? {}) };
       delete check[f];
+      // 업체는 등록된 이름만 — 목록에 없는 이름을 입력하면 노란 칸으로 표시
+      if (f === "company" && v.trim() && names.length && !names.includes(v.trim())) {
+        check.company = "등록되지 않은 업체 — 목록에서 고르거나 '업체' 화면에서 먼저 추가하세요";
+      }
       return { ...r, [f]: v, check };
     }));
     setDirty(true);

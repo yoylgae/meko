@@ -44,25 +44,25 @@ function editDistance(a: string, b: string): number {
       dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
   return dp[a.length][b.length];
 }
-/** 읽은 업체명을 등록된 업체 중 가장 가까운 이름으로. 확신이 없으면 note를 붙인다 */
+/**
+ * 읽은 업체명을 등록된 업체 중 가장 가까운 이름으로.
+ * 기록지에는 등록된 업체만 적히므로 목록 밖 이름은 절대 돌려주지 않고, 자신 없으면 확인 표시만 붙인다.
+ */
 export function matchCompany(raw: string, names: string[]): { name: string; note?: string } {
   const s = raw.replace(/\s|\(\?\)|\?/g, "");
   if (!s) return { name: "", note: "업체 비어 있음" };
+  if (!names.length) return { name: s };
   if (names.includes(s)) return raw.includes("?") ? { name: s, note: `'${raw}'로 읽힘` } : { name: s };
   const js = jamo(s);
-  let best = "", bestD = Infinity, ties = 0;
+  let best = names[0], bestD = Infinity, ties = 0;
   for (const n of names) {
     const d = editDistance(js, jamo(n));
     if (d < bestD) { bestD = d; best = n; ties = 0; }
     else if (d === bestD) ties++;
   }
-  // 자모 1개 차이(한발→한밭)는 흘림체 오인으로 보고 조용히 고침,
-  // 2개 차이이거나 후보가 여럿이면 고치되 확인 표시
-  if (best && bestD === 1 && ties === 0) return { name: best };
-  if (best && bestD <= 2) {
-    return { name: best, note: `'${s}' → '${best}' 자동 교정${ties ? " (후보 여러 개)" : ""}` };
-  }
-  return { name: s, note: "등록되지 않은 업체" };
+  // 자모 1개 차이(한발→한밭)는 흘림체 오인으로 보고 조용히 고침, 그 외엔 고치되 확인 표시
+  if (bestD === 1 && ties === 0) return { name: best };
+  return { name: best, note: `'${s}'로 읽혀 '${best}'(으)로 맞춤${ties ? " — 비슷한 업체가 여럿" : ""}, 확인 필요` };
 }
 
 // ── 시간: '06:08', '11', ':48', '0805' → 'H:MM' (앞 행의 시를 이어받음) ──

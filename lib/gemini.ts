@@ -22,9 +22,7 @@ ${from === 1 ? "왼쪽 1~3묶음" : "오른쪽 4~6묶음"}(번호 ${from}~${to},
 [각 칸을 적는 법 — 해석하지 말고 보이는 그대로]
 - seq: 인쇄된 번호(숫자).
 - vehicle: 차량번호 숫자 4자리. 애매한 숫자는 가장 그럴듯한 숫자를 쓰고 끝에 '?'를 붙이세요.
-- company: 업체명. 위 칸과 같다는 표시(〃, 11처럼 보이는 두 줄, 7·ㄱ처럼 보이는 꺾쇠)는 반드시 "〃" 로 적으세요.
-  업체는 보통 다음 중 하나입니다: ${companies.join(", ")}.
-  흘려 쓴 글씨는 이 목록에서 가장 가까운 이름으로 적되, 목록에 없는 게 확실하면 보이는 대로 적으세요.
+${companyRule(companies)}
 - time: 출차시간을 적힌 그대로. '06:08'처럼 시:분이 다 있으면 그대로, 분만 적혀 있으면 '11'처럼 분 숫자만,
   ':48'처럼 콜론과 분만 있으면 ':48'. 시를 추측해서 채우지 마세요.
 
@@ -33,29 +31,38 @@ ${from === 1 ? "왼쪽 1~3묶음" : "오른쪽 4~6묶음"}(번호 ${from}~${to},
 - total_text: '총댓수' 칸에 적힌 값. 없으면 "".`;
 }
 
-const schema = {
-  type: Type.OBJECT,
-  properties: {
-    date_text: { type: Type.STRING },
-    total_text: { type: Type.STRING },
-    rows: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          seq: { type: Type.INTEGER },
-          vehicle: { type: Type.STRING },
-          company: { type: Type.STRING },
-          time: { type: Type.STRING },
+/**
+ * 결과 모양. 업체는 등록된 업체 이름이나 "〃"만 고를 수 있게 enum으로 제한
+ * (기록지에는 등록된 업체만 적히므로, 없는 이름을 지어내지 않게)
+ */
+export const DITTO_MARK = "〃";
+function schemaFor(companies: string[]) {
+  const company = companies.length
+    ? { type: Type.STRING, format: "enum", enum: [...new Set([...companies, DITTO_MARK])] }
+    : { type: Type.STRING };
+  return {
+    type: Type.OBJECT,
+    properties: {
+      date_text: { type: Type.STRING },
+      total_text: { type: Type.STRING },
+      rows: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: { seq: { type: Type.INTEGER }, vehicle: { type: Type.STRING }, company, time: { type: Type.STRING } },
+          required: ["seq", "vehicle", "company", "time"],
+          propertyOrdering: ["seq", "vehicle", "company", "time"],
         },
-        required: ["seq", "vehicle", "company", "time"],
-        propertyOrdering: ["seq", "vehicle", "company", "time"],
       },
     },
-  },
-  required: ["date_text", "total_text", "rows"],
-  propertyOrdering: ["date_text", "total_text", "rows"],
-};
+    required: ["date_text", "total_text", "rows"],
+    propertyOrdering: ["date_text", "total_text", "rows"],
+  };
+}
+
+const companyRule = (companies: string[]) => `- company: 업체명. 위 칸과 같다는 표시(〃, 11처럼 보이는 두 줄, 7·ㄱ처럼 보이는 꺾쇠)는 반드시 "〃" 로 적으세요.
+  업체는 반드시 다음 목록 중 하나입니다(이 기록지에는 목록에 없는 업체가 적히지 않습니다): ${companies.join(", ")}.
+  흘려 쓴 글씨는 글자 모양이 가장 비슷한 목록의 이름을 고르세요.`;
 
 type Level = "low" | "medium" | "high";
 function level(env: string | undefined, dflt: Level): ThinkingLevel {
@@ -100,20 +107,21 @@ async function callJson<T>(ai: GoogleGenAI, model: string, label: string, image:
 async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType: string,
   companies: string[], from: number, to: number): Promise<PageRead> {
   const p = await callJson<PageRead>(ai, model, `whole ${from}-${to}`, image, mimeType,
-    ocrPrompt(companies, from, to), schema, level(process.env.GEMINI_THINKING, "low"));
+    ocrPrompt(companies, from, to), schemaFor(companies), level(process.env.GEMINI_THINKING, "low"));
   return keepRange(p, from, to);
 }
 
 // ── 묶음 6개로 잘라 읽기 ───────────────────────────────────────────
 
 type Box = [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0~1000
-type Layout = { date_text: string; total_text: string; blocks: { group: number; box_2d: number[] }[] };
+type Layout = { date_text: string; total_text: string; rotate: string; blocks: { group: number; box_2d: number[] }[] };
 
 const layoutSchema = {
   type: Type.OBJECT,
   properties: {
     date_text: { type: Type.STRING },
     total_text: { type: Type.STRING },
+    rotate: { type: Type.STRING, format: "enum", enum: ["0", "90", "180", "270"] },
     blocks: {
       type: Type.ARRAY,
       items: {
@@ -124,8 +132,8 @@ const layoutSchema = {
       },
     },
   },
-  required: ["date_text", "total_text", "blocks"],
-  propertyOrdering: ["date_text", "total_text", "blocks"],
+  required: ["date_text", "total_text", "rotate", "blocks"],
+  propertyOrdering: ["date_text", "total_text", "rotate", "blocks"],
 };
 
 const LAYOUT_PROMPT = `이 사진은 손으로 쓴 '폐기물 반출 현황' 기록지입니다.
@@ -134,6 +142,8 @@ const LAYOUT_PROMPT = `이 사진은 손으로 쓴 '폐기물 반출 현황' 기
 - 상자는 그 묶음의 머리글(번호·차량번호·업체·출차시간)부터 마지막 20번째 줄까지, 4칸 전체를 빠짐없이 덮게 하세요.
 - 사진이 기울었거나 돌아가 있어도 실제 보이는 위치 그대로 적으세요.
 - group은 번호가 작은 묶음부터 1~6 (1묶음 = 번호 1~20 … 6묶음 = 번호 101~120).
+rotate: 사진을 시계 방향으로 몇 도 돌려야 글씨가 똑바로 서는지 (0, 90, 180, 270 중 하나).
+  예: 기록지가 왼쪽으로 누워 있어 글씨가 아래에서 위로 읽히면 90.
 또 오른쪽 위 '월일' 칸 값을 date_text(예: "10/15"), '총댓수' 칸 값을 total_text로 적으세요. 없으면 "".`;
 
 function blockPrompt(companies: string[], group: number) {
@@ -147,37 +157,48 @@ function blockPrompt(companies: string[], group: number) {
 [각 칸을 적는 법 — 해석하지 말고 보이는 그대로]
 - seq: 인쇄된 번호(숫자).
 - vehicle: 차량번호 숫자 4자리. 애매한 숫자는 가장 그럴듯한 숫자를 쓰고 끝에 '?'를 붙이세요.
-- company: 업체명. 위 칸과 같다는 표시(〃, 11처럼 보이는 두 줄, 7·ㄱ처럼 보이는 꺾쇠)는 반드시 "〃" 로 적으세요.
-  업체는 보통 다음 중 하나입니다: ${companies.join(", ")}.
-  흘려 쓴 글씨는 이 목록에서 가장 가까운 이름으로 적되, 목록에 없는 게 확실하면 보이는 대로 적으세요.
+${companyRule(companies)}
 - time: 출차시간을 적힌 그대로. '06:08'처럼 시:분이 다 있으면 그대로, 분만 적혀 있으면 '11'처럼 분 숫자만,
   ':48'처럼 콜론과 분만 있으면 ':48'. 시를 추측해서 채우지 마세요.
 - date_text, total_text는 빈 문자열로 두세요.`;
 }
 
-/** 묶음 위치 6개가 그럴듯하면 왼쪽부터 정렬해서 돌려줌, 아니면 null */
+/**
+ * 묶음 위치 6개가 그럴듯하면 1→6 순서로 돌려줌, 아니면 null.
+ * 사진이 돌아가 있으면 묶음이 위아래로 쌓여 보이므로 가로·세로 모두 허용하고, 순서는 Gemini가 붙인 group을 따름.
+ */
 function validBoxes(layout: Layout): Box[] | null {
-  const boxes = (layout.blocks ?? [])
-    .map((b) => b.box_2d)
-    .filter((b): b is Box => Array.isArray(b) && b.length === 4 && b.every((n) => Number.isFinite(n)))
-    .map((b) => b.map((n) => Math.max(0, Math.min(1000, n))) as Box)
-    .filter(([y0, x0, y1, x1]) => y1 - y0 > 150 && x1 - x0 > 40 && x1 - x0 < 400);
-  if (boxes.length !== 6) return null;
-  return boxes.sort((a, b) => a[1] - b[1]);
+  const items = (layout.blocks ?? [])
+    .filter((b) => Array.isArray(b.box_2d) && b.box_2d.length === 4 && b.box_2d.every((n) => Number.isFinite(n)))
+    .map((b) => ({ group: Number(b.group), box: b.box_2d.map((n) => Math.max(0, Math.min(1000, n))) as Box }))
+    .filter(({ box: [y0, x0, y1, x1] }) => {
+      const long = Math.max(y1 - y0, x1 - x0), short = Math.min(y1 - y0, x1 - x0);
+      return long > 150 && short > 30 && long / short > 1.5; // 묶음은 길쭉한 직사각형
+    });
+  if (items.length !== 6) return null;
+  const groups = items.map((i) => i.group).sort((a, b) => a - b);
+  if (groups.join() === "1,2,3,4,5,6") return items.sort((a, b) => a.group - b.group).map((i) => i.box);
+  // group이 엉망이면 위치로 정렬 (세로로 긴 묶음은 왼→오른쪽, 가로로 긴 묶음은 위→아래)
+  const tall = items.every(({ box: [y0, x0, y1, x1] }) => y1 - y0 > x1 - x0);
+  return items.sort((a, b) => (tall ? a.box[1] - b.box[1] : a.box[0] - b.box[0])).map((i) => i.box);
 }
 
-/** 사진에서 상자 부분을 여유를 두고 잘라 JPEG base64로 (작으면 키워서 글씨가 잘 보이게) */
-async function crop(buf: Buffer, box: Box): Promise<string> {
-  const img = sharp(buf);
-  const { width = 0, height = 0 } = await img.metadata();
+/** 사진에서 상자 부분을 여유를 두고 잘라, 글씨가 바로 서게 돌린 뒤 JPEG base64로 (작으면 키움) */
+async function crop(buf: Buffer, box: Box, rotate: number): Promise<string> {
+  const { width = 0, height = 0 } = await sharp(buf).metadata();
   const [y0, x0, y1, x1] = box;
-  const padX = (x1 - x0) * 0.08, padY = 15;
+  const padX = (x1 - x0) * 0.06 + 8, padY = (y1 - y0) * 0.06 + 8;
   const left = Math.max(0, Math.floor(((x0 - padX) / 1000) * width));
   const top = Math.max(0, Math.floor(((y0 - padY) / 1000) * height));
   const right = Math.min(width, Math.ceil(((x1 + padX) / 1000) * width));
   const bottom = Math.min(height, Math.ceil(((y1 + padY) / 1000) * height));
-  let out = sharp(buf).extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) });
-  if (bottom - top < 1600) out = out.resize({ height: 1600 });
+  const piece = await sharp(buf)
+    .extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) })
+    .rotate([90, 180, 270].includes(rotate) ? rotate : 0)
+    .toBuffer();
+  const meta = await sharp(piece).metadata();
+  let out = sharp(piece);
+  if ((meta.height ?? 0) < 1600) out = out.resize({ height: 1600 });
   return (await out.jpeg({ quality: 92 }).toBuffer()).toString("base64");
 }
 
@@ -196,8 +217,9 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
     return null;
   }
   const boxes = validBoxes(layout);
+  console.log("[gemini] 묶음 위치", JSON.stringify({ rotate: layout.rotate, ok: !!boxes }));
   if (!boxes) {
-    console.warn("[gemini] 묶음 위치가 이상함 → 예전 방식:", JSON.stringify(layout.blocks).slice(0, 300));
+    console.warn("[gemini] 묶음 위치가 이상함 → 예전 방식:", JSON.stringify(layout).slice(0, 400));
     return null;
   }
 
@@ -205,10 +227,10 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
   const thinking = level(process.env.GEMINI_BLOCK_THINKING, "medium");
   const readGroup = async (g: number): Promise<RawRow[]> => {
     const from = (g - 1) * 20 + 1, to = g * 20;
-    const piece = await crop(buf, boxes[g - 1]);
+    const piece = await crop(buf, boxes[g - 1], Number(layout.rotate) || 0);
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g), schema, thinking);
+        const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g), schemaFor(companies), thinking);
         return keepRange(p, from, to).rows;
       } catch (e) {
         if (quotaInfo(e)) throw e;
