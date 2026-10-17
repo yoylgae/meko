@@ -25,24 +25,25 @@ const renumber = (rows: EditRow[]) => rows.map((x, k) => ({ ...x, seq: k + 1 }))
 
 /** 값 고치기 (+ 검사 표시 갱신). 위에서부터 차례로 적용해서 시간·〃이 바로 위 행을 이어받게 함 */
 function applyEdits(rows: EditRow[], edits: Edit[], names: string[]): EditRow[] {
-  const next = rows.map((r) => ({ ...r, check: { ...(r.check ?? {}) } }));
+  const next: (EditRow & { check: NonNullable<EditRow["check"]> })[] =
+    rows.map((r) => ({ ...r, check: { ...(r.check ?? {}) } }));
   const sorted = [...edits].sort((x, y) => x.r - y.r || x.c - y.c);
   for (const { r, c, v: raw } of sorted) {
-    while (next.length <= r) next.push(emptyRow((next[next.length - 1]?.seq ?? 0) + 1));
+    while (next.length <= r) next.push({ ...emptyRow((next[next.length - 1]?.seq ?? 0) + 1), check: {} });
     const row = next[r];
     const col = COLS[c];
     let v = String(raw ?? "").trim();
-    delete row.check![col];
+    delete row.check[col];
     if (col === "vehicle_no") {
-      if (v && !/^\d{4}$/.test(v)) row.check!.vehicle_no = "차량번호 4자리인지 확인";
+      if (v && !/^\d{4}$/.test(v)) row.check.vehicle_no = "차량번호 4자리인지 확인";
     } else if (col === "company") {
       if (v && isDitto(v)) v = next[r - 1]?.company ?? "";
-      if (v && names.length && !names.includes(v)) row.check!.company = "등록되지 않은 업체 — 목록에서 고르거나 '업체' 화면에서 먼저 추가하세요";
+      if (v && names.length && !names.includes(v)) row.check.company = "등록되지 않은 업체 — 목록에서 고르거나 '업체' 화면에서 먼저 추가하세요";
     } else if (col === "out_time" && v) {
       const pm = r > 0 ? timeToMinutes(next[r - 1].out_time) : null;
       const t = parseTime(v, pm === null ? null : { h: Math.floor(pm / 60), m: pm % 60 });
-      if (t) { v = t.value; if (t.note) row.check!.out_time = t.note; }
-      else row.check!.out_time = "시간 형식 확인";
+      if (t) { v = t.value; if (t.note) row.check.out_time = t.note; }
+      else row.check.out_time = "시간 형식 확인";
     }
     row[col] = v;
   }
