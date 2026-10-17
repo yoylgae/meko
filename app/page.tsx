@@ -1,6 +1,7 @@
 "use client";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import RotatableImage from "./RotatableImage";
 import {
   normalizeRows, parseFormDate, parseTime, koreanDate, timeToMinutes,
   type Company, type EditRow, type RawRow,
@@ -284,9 +285,7 @@ function Editor() {
         {images.length > 0 && (
           <aside className="scan">
             {images.map((u, i) => (
-              <a key={u} href={u} target="_blank" rel="noreferrer" title="크게 보기">
-                <img src={u} alt={`기록지 사진 ${i + 1}`} />
-              </a>
+              <RotatableImage key={u} src={u} alt={`기록지 사진 ${i + 1}`} />
             ))}
           </aside>
         )}
