@@ -1,4 +1,4 @@
-import { GoogleGenAI, MediaResolution, Type } from "@google/genai";
+import { GoogleGenAI, MediaResolution, ThinkingLevel, Type } from "@google/genai";
 import type { RawRow } from "./form";
 
 export type PageRead = { date_text: string; total_text: string; rows: RawRow[] };
@@ -56,6 +56,12 @@ const schema = {
   propertyOrdering: ["date_text", "total_text", "rows"],
 };
 
+/** GEMINI_THINKING=low|medium|high (기본 low) */
+function thinkingLevel(): ThinkingLevel {
+  const v = String(process.env.GEMINI_THINKING ?? "low").trim().toLowerCase();
+  return v === "high" ? ThinkingLevel.HIGH : v === "medium" ? ThinkingLevel.MEDIUM : ThinkingLevel.LOW;
+}
+
 async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType: string,
   companies: string[], from: number, to: number): Promise<PageRead> {
   const res = await ai.models.generateContent({
@@ -64,6 +70,8 @@ async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType
     config: {
       temperature: 0,
       maxOutputTokens: 32768, // 생각(thinking) 토큰까지 포함해도 표 60줄이 잘리지 않게
+      // 손글씨 옮겨 적기는 깊은 추론이 필요 없음. 기본(medium)이면 생각에 1분 넘게·크레딧 4배를 써서 시간 초과가 남
+      thinkingConfig: { thinkingLevel: thinkingLevel() },
       mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
       responseMimeType: "application/json",
       responseSchema: schema,
@@ -129,8 +137,8 @@ function modelChain(): string[] {
 export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 환경변수가 없습니다.");
-  // 한 요청이 2분을 넘기면 끊음 (서버 제한 5분 안에서 다음 모델까지 시도할 여유)
-  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 120_000 } });
+  // 한 요청이 90초를 넘기면 끊음 (한 번 더 읽기까지 서버 제한 5분 안에 끝나게)
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 90_000 } });
   const started = Date.now();
 
   let lastQuota: { retryAfter: number; daily: boolean } | null = null;
@@ -151,10 +159,18 @@ export async function readPageGemini(imageBase64: string, mimeType: string, comp
 }
 
 async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
-  const [a, b] = await Promise.all([
-    readRange(ai, model, imageBase64, mimeType, companies, 1, 60),
-    readRange(ai, model, imageBase64, mimeType, companies, 61, 120),
-  ]);
+  // 왼쪽·오른쪽 절반을 동시에. 한쪽만 실패하면(한도 제외) 그쪽만 한 번 더 읽음
+  const half = (from: number, to: number) => readRange(ai, model, imageBase64, mimeType, companies, from, to);
+  const once = async (from: number, to: number) => {
+    try {
+      return await half(from, to);
+    } catch (e) {
+      if (quotaInfo(e)) throw e;
+      console.warn(`[gemini] ${model} ${from}-${to} 실패, 한 번 더:`, String((e as Error)?.message).slice(0, 150));
+      return half(from, to);
+    }
+  };
+  const [a, b] = await Promise.all([once(1, 60), once(61, 120)]);
   return mergeHalves(a, b);
 }
 
