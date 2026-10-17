@@ -1,36 +1,22 @@
 import { QuotaError, readPageGemini, type PageRead } from "./gemini";
-import { claudeAvailable, readPageClaude } from "./claude";
 
-export type Engine = "gemini" | "claude";
-
-/** 두 엔진 모두 실패 — 화면에 그대로 보여 줄 문장 */
+/** 인식 실패 — 화면에 그대로 보여 줄 문장 */
 export class OcrFailed extends Error {}
 
-const geminiReason = (e: unknown) =>
-  e instanceof QuotaError
-    ? (e.daily ? "Gemini 오늘 무료 사용량 소진" : "Gemini 무료 사용량 한도(분당)")
-    : /503|UNAVAILABLE|high demand/i.test(String((e as Error)?.message)) ? "Gemini 서버 혼잡"
-    : /timeout|timed out|aborted|지연/i.test(String((e as Error)?.message)) ? "Gemini 응답 지연"
-    : "Gemini 오류";
-
-/**
- * 기록지 읽기: Gemini 한 번(모델별 한도 넘김 포함) → 실패하면 Claude 한 번.
- * 둘 다 실패하면 바로 이유를 알려 줌 (자동 재시도·대기 없음).
- */
-export async function readPage(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead & { engine: Engine }> {
+/** 기록지 읽기 (Gemini). 한도에 걸리면 Gemini 안에서 다른 모델로 넘기고, 그래도 안 되면 이유를 알려 줌 */
+export async function readPage(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   try {
-    return { ...(await readPageGemini(imageBase64, mimeType, companies)), engine: "gemini" };
-  } catch (geminiErr) {
-    const gReason = geminiReason(geminiErr);
-    console.warn("[ocr] Gemini 실패 → Claude로 전환:", (geminiErr as Error)?.message?.slice(0, 200));
-    if (!claudeAvailable()) {
-      throw new OcrFailed(`${gReason}로 읽지 못했습니다. 잠시 뒤 다시 시도하세요. (Claude 대체 인식은 API 키가 없어 꺼져 있음)`);
+    return await readPageGemini(imageBase64, mimeType, companies);
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    console.error("[ocr] Gemini 실패:", msg.slice(0, 300));
+    if (e instanceof QuotaError) {
+      throw new OcrFailed(e.daily
+        ? "Gemini 오늘 사용량 한도를 다 썼습니다. 한국시간 오후 4~5시에 초기화됩니다."
+        : `Gemini 사용량 한도에 걸렸습니다. ${e.retryAfter}초 뒤 다시 시도하세요.`);
     }
-    try {
-      return { ...(await readPageClaude(imageBase64, mimeType, companies)), engine: "claude" };
-    } catch (claudeErr) {
-      console.error("[ocr] Claude도 실패:", (claudeErr as Error)?.message);
-      throw new OcrFailed(`${gReason}로 Claude에 넘겼지만 Claude도 실패했습니다. ${(claudeErr as Error).message}`);
-    }
+    if (/503|UNAVAILABLE|high demand/i.test(msg)) throw new OcrFailed("Gemini 서버가 잠시 혼잡합니다. 잠시 뒤 다시 시도하세요.");
+    if (/timeout|timed out|aborted|지연/i.test(msg)) throw new OcrFailed("Gemini 응답이 너무 늦어 중단했습니다. 사진을 다시 올려 주세요.");
+    throw new OcrFailed(`사진을 읽지 못했습니다. (${msg.slice(0, 150)})`);
   }
 }

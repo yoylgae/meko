@@ -7,7 +7,7 @@ import {
 } from "@/lib/form";
 
 type Field = "vehicle_no" | "company" | "out_time";
-type OcrResult = { rows: RawRow[]; imagePath: string | null; localUrl: string; total: number | null; engine?: string; note?: string };
+type OcrResult = { rows: RawRow[]; imagePath: string | null; localUrl: string; total: number | null; note?: string };
 
 const today = () => {
   const d = new Date();
@@ -117,9 +117,7 @@ function Editor() {
     setDirty(true);
     const pages = perPage.length > 1 ? ` (${perPage.map((n, i) => `${i + 1}장 ${n}건`).join(", ")})` : "";
     const sum = perPage.reduce((a, b) => a + b, 0);
-    const viaClaude = ocrs.some((o) => o.engine === "claude")
-      ? ` (Gemini 오류로 Claude가 대신 읽었습니다${ocrs.length > 1 ? ` — ${ocrs.map((o, i) => o.engine === "claude" ? `${i + 1}장` : "").filter(Boolean).join(", ")}` : ""})` : "";
-    setMsg({ text: `${sum}건을 읽었습니다${pages}${viaClaude}.${nCheck ? ` 노란 칸 ${nCheck}개를 사진과 비교해 확인해 주세요.` : ""}${note}` });
+    setMsg({ text: `${sum}건을 읽었습니다${pages}.${nCheck ? ` 노란 칸 ${nCheck}개를 사진과 비교해 확인해 주세요.` : ""}${note}` });
   }
 
   // 저장 안 하고 나가려 할 때 경고
@@ -148,8 +146,7 @@ function Editor() {
       for (let i = 0; i < files.length; i++) {
         const label = files.length > 1 ? `(${i + 1}/${files.length}장) ` : "";
         const image = await shrink(files[i]);
-        // 서버가 Gemini → (실패 시) Claude 순서로 한 번씩만 시도함. 둘 다 실패하면 이유를 바로 보여 줌
-        setBusy(`기록지를 읽는 중… ${label}보통 20~40초, Gemini가 느리거나 안 되면 Claude가 이어서 읽어 최대 2~3분 걸릴 수 있어요`);
+        setBusy(`Gemini가 기록지를 읽는 중… ${label}20~40초`);
         const fd = new FormData();
         fd.append("image", image, "scan.jpg");
         fd.append("date", date);
@@ -164,7 +161,6 @@ function Editor() {
           imagePath: (j.imagePath as string | null) ?? null,
           localUrl: URL.createObjectURL(files[i]),
           total: Number.isFinite(total) ? total : null,
-          engine: String(j.engine ?? "gemini"),
         });
         if (!dateText && j.date_text) dateText = String(j.date_text);
       }
