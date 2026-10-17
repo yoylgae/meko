@@ -63,17 +63,35 @@ async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType
     contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: image } }, { text: ocrPrompt(companies, from, to) }] }],
     config: {
       temperature: 0,
+      maxOutputTokens: 32768, // 생각(thinking) 토큰까지 포함해도 표 60줄이 잘리지 않게
       mediaResolution: MediaResolution.MEDIA_RESOLUTION_HIGH,
       responseMimeType: "application/json",
       responseSchema: schema,
     },
   });
   const text = res.text ?? "";
-  try {
-    return keepRange(JSON.parse(text) as PageRead, from, to);
-  } catch {
-    throw new Error("Gemini 응답을 해석하지 못했습니다: " + text.slice(0, 200));
+  const cand = res.candidates?.[0];
+  let parsed: PageRead | null = null;
+  try { parsed = JSON.parse(text) as PageRead; } catch { /* 아래에서 처리 */ }
+  const kept = parsed ? keepRange(parsed, from, to) : null;
+
+  // 진단용 기록: 어떤 모델이 무엇을 얼마나 돌려줬는지 (Vercel 로그에서 확인)
+  console.log("[gemini]", JSON.stringify({
+    model, range: `${from}-${to}`,
+    finish: cand?.finishReason, block: res.promptFeedback?.blockReason,
+    usage: res.usageMetadata ? {
+      in: res.usageMetadata.promptTokenCount, out: res.usageMetadata.candidatesTokenCount,
+      think: res.usageMetadata.thoughtsTokenCount, total: res.usageMetadata.totalTokenCount,
+    } : null,
+    textLen: text.length, rawRows: parsed?.rows?.length ?? null, keptRows: kept?.rows.length ?? null,
+    date: parsed?.date_text, sample: parsed?.rows?.slice(0, 2),
+  }));
+
+  if (!kept) {
+    if (cand?.finishReason === "MAX_TOKENS") throw new Error("Gemini 응답이 길이 제한에 걸려 잘렸습니다.");
+    throw new Error(`Gemini 응답을 해석하지 못했습니다 (${cand?.finishReason ?? "?"}): ` + text.slice(0, 200));
   }
+  return kept;
 }
 
 /** 사용량 한도(429)에 걸렸을 때. retryAfter = 다시 시도해도 되는 초 */

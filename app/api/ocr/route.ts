@@ -30,6 +30,13 @@ export async function POST(req: NextRequest) {
       if (e instanceof OcrFailed) return NextResponse.json({ error: e.message }, { status: 502 });
       throw e;
     }
+    console.log("[ocr] 결과", JSON.stringify({ site: site.id, date, bytes: bytes.length, rows: page.rows.length, date_text: page.date_text }));
+    if (!page.rows.length) {
+      return NextResponse.json({
+        error: "Gemini가 사진에서 기록을 한 줄도 찾지 못했습니다. 기록지 전체가 보이게, 흔들리지 않게 다시 찍어 주세요."
+          + (page.date_text ? ` (읽힌 날짜: ${page.date_text})` : ""),
+      }, { status: 422 });
+    }
 
     let imagePath: string | null = null;
     try {
