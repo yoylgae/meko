@@ -72,12 +72,13 @@ function level(env: string | undefined, dflt: Level): ThinkingLevel {
 
 /** Gemini 호출 1번: 사진+안내문 → 스키마대로 JSON. 진단용으로 사용량을 로그에 남김 */
 async function callJson<T>(ai: GoogleGenAI, model: string, label: string, image: string, mimeType: string,
-  text: string, responseSchema: object, thinking: ThinkingLevel): Promise<T> {
+  text: string, responseSchema: object, thinking: ThinkingLevel, timeoutMs = 60_000): Promise<T> {
   const t0 = Date.now();
   const res = await ai.models.generateContent({
     model,
     contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: image } }, { text }] }],
     config: {
+      httpOptions: { timeout: timeoutMs }, // 서버가 멈춰 있으면 오래 기다리지 않고 다른 모델로 넘김
       temperature: 0,
       maxOutputTokens: 32768, // 생각(thinking) 토큰까지 포함해도 결과가 잘리지 않게
       thinkingConfig: { thinkingLevel: thinking },
@@ -107,7 +108,7 @@ async function callJson<T>(ai: GoogleGenAI, model: string, label: string, image:
 async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType: string,
   companies: string[], from: number, to: number): Promise<PageRead> {
   const p = await callJson<PageRead>(ai, model, `whole ${from}-${to}`, image, mimeType,
-    ocrPrompt(companies, from, to), schemaFor(companies), level(process.env.GEMINI_THINKING, "low"));
+    ocrPrompt(companies, from, to), schemaFor(companies), level(process.env.GEMINI_THINKING, "low"), 75_000);
   return keepRange(p, from, to);
 }
 
@@ -210,9 +211,10 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
   companies: string[]): Promise<PageRead | null> {
   let layout: Layout;
   try {
-    layout = await callJson<Layout>(ai, model, "layout", imageBase64, mimeType, LAYOUT_PROMPT, layoutSchema, ThinkingLevel.LOW);
+    // 평소 5초 안팎 걸리는 가벼운 요청 — 25초 넘게 답이 없으면 이 모델은 지금 막힌 것
+    layout = await callJson<Layout>(ai, model, "layout", imageBase64, mimeType, LAYOUT_PROMPT, layoutSchema, ThinkingLevel.LOW, 25_000);
   } catch (e) {
-    if (quotaInfo(e)) throw e;
+    if (shouldSwitch(e)) throw e; // 한도·서버 문제면 같은 모델로 더 하지 않고 다음 모델로
     console.warn("[gemini] 묶음 위치 찾기 실패 → 예전 방식:", String((e as Error)?.message).slice(0, 150));
     return null;
   }
@@ -233,7 +235,7 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
         const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g), schemaFor(companies), thinking);
         return keepRange(p, from, to).rows;
       } catch (e) {
-        if (quotaInfo(e)) throw e;
+        if (shouldSwitch(e)) throw e;
         console.warn(`[gemini] block${g} 실패(${attempt}):`, String((e as Error)?.message).slice(0, 150));
       }
     }
@@ -262,8 +264,18 @@ function quotaInfo(e: unknown): { retryAfter: number; daily: boolean } | null {
   return { retryAfter: m ? Math.ceil(Number(m[1])) : 30, daily };
 }
 
+/** Gemini 서버 쪽 문제(혼잡·시간 초과·내부 오류) — 같은 모델로 다시 해 봐야 소용없을 때가 많음 */
+function isServerTrouble(e: unknown): boolean {
+  const msg = String((e as { message?: string })?.message ?? e);
+  const status = Number((e as { status?: number })?.status);
+  return status >= 500 || /UNAVAILABLE|DEADLINE_EXCEEDED|INTERNAL|overloaded|high demand|"code":\s*50\d|aborted|timed? ?out/i.test(msg);
+}
+const isMissingModel = (e: unknown) => /not found|is not supported|404/i.test(String((e as Error)?.message));
+/** 다른 모델로 넘겨야 하는 오류인가 (한도·서버 문제·없는 모델) */
+const shouldSwitch = (e: unknown) => !!quotaInfo(e) || isServerTrouble(e) || isMissingModel(e);
+
 /**
- * 쓸 모델 순서. 한도는 모델마다 따로라서, 앞 모델이 한도에 걸리면 다음 모델로 넘어간다.
+ * 쓸 모델 순서. 한도·서버 상태는 모델마다 따로라서, 앞 모델이 막히면 다음 모델로 넘어간다.
  * GEMINI_MODEL(기본 최신 Flash) → GEMINI_FALLBACK_MODELS(쉼표 구분)
  */
 function modelChain(): string[] {
@@ -277,30 +289,35 @@ function modelChain(): string[] {
  * 기록지 한 장 읽기.
  * 기본: 묶음 6개 위치를 찾아 잘라서 20줄씩 동시에 읽음(작게 잘라 글씨가 크게 보이고, 한 번에 읽는 양이 적어 빠름).
  * 위치를 못 찾으면 예전처럼 1~60 / 61~120 두 번으로 나눠 읽음.
- * 한도에 걸리면 다음 모델로, 모든 모델이 막히면 QuotaError.
+ * 한도·서버 혼잡·시간 초과면 다음 모델로 넘김 (기본: 최신 Flash → 3.6 Flash → 3.5 Flash-Lite).
  */
 export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 환경변수가 없습니다.");
-  // 한 요청이 90초를 넘기면 끊음 (한 번 더 읽기까지 서버 제한 5분 안에 끝나게)
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 90_000 } });
   const started = Date.now();
 
   let lastQuota: { retryAfter: number; daily: boolean } | null = null;
+  let lastErr: unknown = null;
+  const tried: string[] = [];
   for (const model of modelChain()) {
-    // 이미 2분 넘게 썼으면 다음 모델은 시도하지 않음 (서버 제한 5분)
-    if (Date.now() - started > 120_000) throw new Error("Gemini 응답 지연(시간 초과)");
+    // 서버 제한(5분) 안에 끝나도록, 이미 오래 썼으면 다음 모델은 시도하지 않음
+    if (Date.now() - started > 170_000) break;
+    tried.push(model);
     try {
-      return await readWithModel(ai, model, imageBase64, mimeType, companies);
+      const page = await readWithModel(ai, model, imageBase64, mimeType, companies);
+      if (tried.length > 1) console.log(`[gemini] ${model}(으)로 읽음 — 앞 모델: ${tried.slice(0, -1).join(", ")}`);
+      return page;
     } catch (e) {
+      if (!shouldSwitch(e)) throw e; // 그 밖의 오류는 그대로
+      lastErr = e;
       const q = quotaInfo(e);
-      const missing = /not found|is not supported|404/i.test(String((e as Error)?.message));
-      if (!q && !missing) throw e;           // 한도·없는 모델이 아닌 오류는 그대로
       if (q) lastQuota = !lastQuota || q.retryAfter < lastQuota.retryAfter ? q : lastQuota;
-      console.warn(`[gemini] ${model} 건너뜀: ${q ? "사용량 한도" : "모델 없음"}`);
+      console.warn(`[gemini] ${model} 건너뜀: ${q ? "사용량 한도" : isServerTrouble(e) ? "서버 혼잡·응답 없음" : "모델 없음"} — ${String((e as Error)?.message).slice(0, 120)}`);
     }
   }
-  throw new QuotaError(lastQuota?.retryAfter ?? 30, lastQuota?.daily ?? false);
+  if (lastQuota && !isServerTrouble(lastErr)) throw new QuotaError(lastQuota.retryAfter, lastQuota.daily);
+  throw new Error(`Gemini 서버 응답 없음 (시도한 모델: ${tried.join(", ")}) ${String((lastErr as Error)?.message ?? "").slice(0, 120)}`);
 }
 
 async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
@@ -314,7 +331,7 @@ async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string
     try {
       return await half(from, to);
     } catch (e) {
-      if (quotaInfo(e)) throw e;
+      if (shouldSwitch(e)) throw e;
       console.warn(`[gemini] ${model} ${from}-${to} 실패, 한 번 더:`, String((e as Error)?.message).slice(0, 150));
       return half(from, to);
     }
