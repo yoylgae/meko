@@ -224,3 +224,12 @@ table.xg { user-select: none; -webkit-user-select: none; table-layout: fixed; }
 .rot-box.zoomed { cursor: grab; }
 .rot-box.zoomed:active { cursor: grabbing; }
 .rot-stage { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+
+/* ── ★ 자주 오는 업체 ── */
+.xgrid-quick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 6%, var(--card)); }
+.xgrid-quick-label { font-size: 13px; font-weight: 700; color: var(--accent); margin-right: 2px; }
+.quick-co { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.quick-co kbd { font: inherit; font-size: 10px; min-width: 15px; padding: 0 3px; border-radius: 4px; background: var(--head); color: var(--muted); text-align: center; }
+button.star { font-size: 18px; color: var(--muted); }
+button.star.on { color: #e3a008; }

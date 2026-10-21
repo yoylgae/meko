@@ -16,7 +16,7 @@ export type EditRow = Dispatch & { check?: Partial<Record<"vehicle_no" | "compan
 
 export type RawRow = { seq?: number | string; vehicle?: string; company?: string; time?: string };
 
-export type Company = { id?: number; name: string; sort_order: number; separate: boolean; active?: boolean };
+export type Company = { id?: number; name: string; sort_order: number; separate: boolean; frequent?: boolean; active?: boolean; recent?: number };
 
 // ── 업체: 같은 위 칸을 뜻하는 표시 ────────────────────────────
 // 기록지에서는 '〃'를 흘려 써서 11, ll, 7, ㄱ, " 처럼 보인다.
@@ -47,18 +47,21 @@ function editDistance(a: string, b: string): number {
 /**
  * 읽은 업체명을 등록된 업체 중 가장 가까운 이름으로.
  * 기록지에는 등록된 업체만 적히므로 목록 밖 이름은 절대 돌려주지 않고, 자신 없으면 확인 표시만 붙인다.
+ * 자주 오는 업체(frequent)는 글자 모양이 비슷하면 우선해서 고른다 (자모 차이 0.6만큼 가산점).
  */
-export function matchCompany(raw: string, names: string[]): { name: string; note?: string } {
+export function matchCompany(raw: string, names: string[], frequent: string[] = []): { name: string; note?: string } {
   const s = raw.replace(/\s|\(\?\)|\?/g, "");
   if (!s) return { name: "", note: "업체 비어 있음" };
   if (!names.length) return { name: s };
   if (names.includes(s)) return raw.includes("?") ? { name: s, note: `'${raw}'로 읽힘` } : { name: s };
   const js = jamo(s);
-  let best = names[0], bestD = Infinity, ties = 0;
+  const fq = new Set(frequent);
+  let best = names[0], bestScore = Infinity, bestD = Infinity, ties = 0;
   for (const n of names) {
     const d = editDistance(js, jamo(n));
-    if (d < bestD) { bestD = d; best = n; ties = 0; }
-    else if (d === bestD) ties++;
+    const score = d - (fq.has(n) ? 0.6 : 0);
+    if (score < bestScore - 1e-9) { bestScore = score; bestD = d; best = n; ties = 0; }
+    else if (Math.abs(score - bestScore) < 1e-9) ties++;
   }
   // 자모 1개 차이(한발→한밭)는 흘림체 오인으로 보고 조용히 고침, 그 외엔 고치되 확인 표시
   if (bestD === 1 && ties === 0) return { name: best };
@@ -99,7 +102,7 @@ export function parseTime(raw: string, prev: { h: number; m: number } | null):
 /** Gemini가 읽은 원본 행들 → 정리된 행 (업체 〃 처리, 시간 이어받기, 업체명 교정) */
 export function normalizeRows(raw: RawRow[], companyNames: string[], startSeq = 1, prevState?: {
   company?: string; time?: { h: number; m: number } | null;
-}): EditRow[] {
+}, frequent: string[] = []): EditRow[] {
   const out: EditRow[] = [];
   let lastCompany = prevState?.company ?? "";
   let lastTime = prevState?.time ?? null;
@@ -123,7 +126,7 @@ export function normalizeRows(raw: RawRow[], companyNames: string[], startSeq = 
       company = lastCompany;
       if (!company) check.company = "첫 행인데 〃 표시";
     } else {
-      const m = matchCompany(cRaw, companyNames);
+      const m = matchCompany(cRaw, companyNames, frequent);
       company = m.name;
       if (m.note) check.company = m.note;
     }

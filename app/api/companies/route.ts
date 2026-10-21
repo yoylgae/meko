@@ -4,14 +4,23 @@ import { currentSite, handle, HttpError } from "@/lib/access";
 
 export const runtime = "nodejs";
 
-/** 지금 현장의 업체 목록 */
+/** 지금 현장의 업체 목록 + 최근 60일 반출 대수(자주 오는 업체 고를 때 참고) */
 export async function GET(req: NextRequest) {
   return handle(async () => {
     const { site } = await currentSite(req);
     const { data, error } = await db().from("companies").select("*")
       .eq("site_id", site.id).eq("active", true).order("sort_order");
     if (error) throw new Error(error.message);
-    return NextResponse.json({ companies: data });
+
+    const since = new Date(Date.now() - 60 * 86400_000).toISOString().slice(0, 10);
+    const recent = new Map<string, number>();
+    for (let off = 0; off < 50_000; off += 1000) {
+      const { data: rows } = await db().from("dispatches").select("company")
+        .eq("site_id", site.id).gte("report_date", since).range(off, off + 999);
+      (rows ?? []).forEach((r) => recent.set(r.company, (recent.get(r.company) ?? 0) + 1));
+      if (!rows || rows.length < 1000) break;
+    }
+    return NextResponse.json({ companies: (data ?? []).map((c) => ({ ...c, recent: recent.get(c.name) ?? 0 })) });
   });
 }
 
@@ -33,14 +42,14 @@ export async function POST(req: NextRequest) {
   });
 }
 
-/** 순서·따로 표시 일괄 저장: [{id, sort_order, separate}] */
+/** 순서·따로·자주 표시 일괄 저장: [{id, sort_order, separate, frequent}] */
 export async function PATCH(req: NextRequest) {
   return handle(async () => {
     const { site } = await currentSite(req);
-    const { companies } = (await req.json()) as { companies: { id: number; sort_order: number; separate: boolean }[] };
+    const { companies } = (await req.json()) as { companies: { id: number; sort_order: number; separate: boolean; frequent?: boolean }[] };
     for (const c of companies) {
       const { error } = await db().from("companies")
-        .update({ sort_order: c.sort_order, separate: c.separate })
+        .update({ sort_order: c.sort_order, separate: c.separate, frequent: !!c.frequent })
         .eq("id", c.id).eq("site_id", site.id);
       if (error) throw new Error(error.message);
     }

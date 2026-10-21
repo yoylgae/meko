@@ -44,6 +44,7 @@ function Editor() {
   const gridRef = useRef<GridHandle>(null);
 
   const names = useMemo(() => companies.map((c) => c.name), [companies]);
+  const frequent = useMemo(() => companies.filter((c) => c.frequent).map((c) => c.name), [companies]);
 
   useEffect(() => {
     fetch("/api/companies").then((r) => r.json()).then((d) => d.companies && setCompanies(d.companies)).catch(() => {});
@@ -103,7 +104,7 @@ function Editor() {
       const added = normalizeRows(ocr.rows, names, startSeq, {
         company: last?.company,
         time: lastT === null ? null : { h: Math.floor(lastT / 60), m: lastT % 60 },
-      });
+      }, frequent);
       all = [...all, ...added];
       if (ocr.imagePath) paths = [...paths, ocr.imagePath];
       imgs = [...imgs, ocr.localUrl];
@@ -260,7 +261,7 @@ function Editor() {
         )}
 
         <section className="card table-card">
-          <Grid ref={gridRef} rows={rows} names={names} onChange={(rs) => { setRows(rs); setDirty(true); }} />
+          <Grid ref={gridRef} rows={rows} names={names} frequent={frequent} onChange={(rs) => { setRows(rs); setDirty(true); }} />
           {!rows.length && <p className="empty">아직 행이 없습니다. 기록지를 촬영하거나, 맨 아래 칸에 바로 입력하거나, 엑셀에서 복사해 붙여 넣으세요.</p>}
         </section>
 
@@ -273,15 +274,15 @@ function Editor() {
           )}
           <table>
             <tbody>
-              {companies.filter((c) => tally.get(c.name) || c.separate).map((c) => (
-                <tr key={c.name} className={c.separate ? "sep" : ""}><td>{c.name}</td><td>{tally.get(c.name) ?? 0}</td></tr>
+              {companies.filter((c) => tally.get(c.name) || c.separate || c.frequent).map((c) => (
+                <tr key={c.name} className={c.separate ? "sep" : ""}><td>{c.frequent ? "★ " : ""}{c.name}</td><td>{tally.get(c.name) ?? 0}</td></tr>
               ))}
               {unknown.map((n) => (
                 <tr key={n} className="unknown" title="업체 목록에 없는 이름"><td>{n}</td><td>{tally.get(n)}</td></tr>
               ))}
             </tbody>
           </table>
-          <p className="legend">0대인 업체는 숨김 · 엑셀에는 전체 표시</p>
+          <p className="legend">★ 자주 오는 업체는 항상 표시 · 나머지 0대 업체는 숨김 · 엑셀에는 전체 표시</p>
         </aside>
       </div>
 

@@ -9,6 +9,7 @@ import { isDitto, parseTime, timeToMinutes, type EditRow } from "@/lib/form";
  * - Ctrl+C / X / V (엑셀·구글시트와 주고받기 가능), 한 칸을 복사해 여러 칸에 붙이면 모두 채움
  * - 채우기 핸들(선택 오른쪽 아래 점)을 아래로 끌어 복사, Ctrl+D 아래로 채우기
  * - Delete 지우기, Ctrl+Z / Ctrl+Y 되돌리기·다시 실행, 오른쪽 클릭 메뉴(행 삽입·삭제)
+ * - ★ 자주 오는 업체 버튼(또는 Alt+숫자): 고른 행들의 업체를 한 번에 입력
  */
 
 const COLS = ["vehicle_no", "company", "out_time"] as const;
@@ -59,8 +60,9 @@ function parseClipboard(text: string): string[][] {
 const Grid = forwardRef<GridHandle, {
   rows: EditRow[];
   names: string[];
+  frequent?: string[];
   onChange: (rows: EditRow[]) => void;
-}>(function Grid({ rows, names, onChange }, ref) {
+}>(function Grid({ rows, names, frequent = [], onChange }, ref) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLInputElement>(null);
   const [sel, setSel] = useState<Sel>({ a: { r: 0, c: 0 }, f: { r: 0, c: 0 } });
@@ -143,6 +145,18 @@ const Grid = forwardRef<GridHandle, {
   };
   const cancel = () => { setEditing(null); setDraft(""); };
   const startEdit = () => { setEditing("edit"); setDraft(cellValue(sel.f.r, sel.f.c)); };
+
+  // ── ★ 자주 오는 업체 바로 넣기 ──
+  const pickCompany = (name: string) => {
+    if (editing) cancel();
+    setActive(true);
+    const last = Math.max(top, Math.min(bottom, rows.length)); // 맨 아래 빈 줄을 골랐으면 새 행으로
+    const edits: Edit[] = [];
+    for (let r = top; r <= last; r++) edits.push({ r, c: 1, v: name });
+    edit(edits);
+    // 한 행만 골랐으면 다음 행 업체 칸으로 넘어가서 연달아 누를 수 있게
+    if (top === bottom) select({ r: top + 1, c: 1 }, false, lastRow + (top === rows.length ? 1 : 0));
+  };
 
   // ── 복사·붙여넣기 ──
   const selectionTSV = () => {
@@ -243,6 +257,8 @@ const Grid = forwardRef<GridHandle, {
       } else if (top > 0) {
         edit(Array.from({ length: right - left + 1 }, (_, i) => ({ r: top, c: left + i, v: cellValue(top - 1, left + i) })));
       }
+    } else if (e.altKey && /^Digit[1-9]$/.test(e.code) && frequent[Number(e.code.slice(5)) - 1]) {
+      e.preventDefault(); pickCompany(frequent[Number(e.code.slice(5)) - 1]);
     } else if (mod && (k === "a" || k === "A")) {
       e.preventDefault(); setSel({ a: { r: 0, c: 0 }, f: { r: Math.max(0, rows.length - 1), c: COLS.length - 1 } });
     }
@@ -366,6 +382,19 @@ const Grid = forwardRef<GridHandle, {
           드래그로 범위 선택 · Ctrl+C/V · 오른쪽 아래 점 끌어 채우기 · 오른쪽 클릭 메뉴
         </span>
       </div>
+      {frequent.length > 0 && (
+        <div className="xgrid-quick" aria-label="자주 오는 업체">
+          <span className="xgrid-quick-label">★ 자주 오는 업체</span>
+          {frequent.map((n, i) => (
+            <button key={n} type="button" className="ghost small quick-co"
+              onPointerDown={(e) => e.preventDefault()} onClick={() => pickCompany(n)}
+              title={`고른 행의 업체를 '${n}'(으)로${i < 9 ? ` (Alt+${i + 1})` : ""}`}>
+              {i < 9 && <kbd>{i + 1}</kbd>}{n}
+            </button>
+          ))}
+          <span className="xgrid-info">행(여러 행도 됨)을 고르고 누르면 업체가 들어가요 · 한 행이면 다음 행으로 넘어감</span>
+        </div>
+      )}
       <div className="table-wrap">
         <table className="grid xg">
           <thead>
@@ -419,7 +448,9 @@ const Grid = forwardRef<GridHandle, {
             ))}
           </tbody>
         </table>
-        <datalist id="company-list">{names.map((n) => <option key={n} value={n} />)}</datalist>
+        <datalist id="company-list">
+          {[...frequent.filter((n) => names.includes(n)), ...names.filter((n) => !frequent.includes(n))].map((n) => <option key={n} value={n} />)}
+        </datalist>
       </div>
       {menu && (
         <div className="ctx" style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 330) }}

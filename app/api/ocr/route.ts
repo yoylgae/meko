@@ -16,16 +16,17 @@ export async function POST(req: NextRequest) {
     const date = String(form.get("date") ?? "");
     if (!(file instanceof File)) throw new HttpError(400, "사진이 없습니다.");
 
-    const { data: comps } = await db().from("companies").select("name")
+    const { data: comps } = await db().from("companies").select("name, frequent")
       .eq("site_id", site.id).eq("active", true).order("sort_order");
     const companies = (comps ?? []).map((c) => c.name as string);
+    const frequent = (comps ?? []).filter((c) => c.frequent).map((c) => c.name as string);
 
     const bytes = Buffer.from(await file.arrayBuffer());
     const mimeType = file.type || "image/jpeg";
 
     let page;
     try {
-      page = await readPage(bytes.toString("base64"), mimeType, companies);
+      page = await readPage(bytes.toString("base64"), mimeType, companies, frequent);
     } catch (e) {
       if (e instanceof OcrFailed) return NextResponse.json({ error: e.message }, { status: 502 });
       throw e;

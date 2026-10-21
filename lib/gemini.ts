@@ -4,7 +4,7 @@ import type { RawRow } from "./form";
 
 export type PageRead = { date_text: string; total_text: string; rows: RawRow[] };
 
-export function ocrPrompt(companies: string[], from: number, to: number) {
+export function ocrPrompt(companies: string[], from: number, to: number, frequent: string[] = []) {
   return `이 사진은 손으로 쓴 '폐기물 반출 현황' 기록지입니다.
 
 [양식]
@@ -22,7 +22,7 @@ ${from === 1 ? "왼쪽 1~3묶음" : "오른쪽 4~6묶음"}(번호 ${from}~${to},
 [각 칸을 적는 법 — 해석하지 말고 보이는 그대로]
 - seq: 인쇄된 번호(숫자).
 - vehicle: 차량번호 숫자 4자리. 애매한 숫자는 가장 그럴듯한 숫자를 쓰고 끝에 '?'를 붙이세요.
-${companyRule(companies)}
+${companyRule(companies, frequent)}
 - time: 출차시간을 적힌 그대로. '06:08'처럼 시:분이 다 있으면 그대로, 분만 적혀 있으면 '11'처럼 분 숫자만,
   ':48'처럼 콜론과 분만 있으면 ':48'. 시를 추측해서 채우지 마세요.
 
@@ -60,9 +60,16 @@ function schemaFor(companies: string[]) {
   };
 }
 
-const companyRule = (companies: string[]) => `- company: 업체명. 위 칸과 같다는 표시(〃, 11처럼 보이는 두 줄, 7·ㄱ처럼 보이는 꺾쇠)는 반드시 "〃" 로 적으세요.
-  업체는 반드시 다음 목록 중 하나입니다(이 기록지에는 목록에 없는 업체가 적히지 않습니다): ${companies.join(", ")}.
-  흘려 쓴 글씨는 글자 모양이 가장 비슷한 목록의 이름을 고르세요.`;
+const companyRule = (companies: string[], frequent: string[] = []) => {
+  const fq = frequent.filter((n) => companies.includes(n));
+  const others = companies.filter((n) => !fq.includes(n));
+  const list = fq.length
+    ? `\n  · 이 현장에 자주 오는 업체(대부분 이 중 하나): ${fq.join(", ")}` + (others.length ? `\n  · 가끔 오는 업체: ${others.join(", ")}` : "")
+    : ` ${companies.join(", ")}`;
+  return `- company: 업체명. 위 칸과 같다는 표시(〃, 11처럼 보이는 두 줄, 7·ㄱ처럼 보이는 꺾쇠)는 반드시 "〃" 로 적으세요.
+  업체는 반드시 다음 목록 중 하나입니다(이 기록지에는 목록에 없는 업체가 적히지 않습니다):${list}
+  흘려 쓴 글씨는 글자 모양이 가장 비슷한 이름을 고르되, 애매하면 자주 오는 업체를 우선하세요.`;
+};
 
 type Level = "low" | "medium" | "high";
 function level(env: string | undefined, dflt: Level): ThinkingLevel {
@@ -106,9 +113,9 @@ async function callJson<T>(ai: GoogleGenAI, model: string, label: string, image:
 
 /** 사진 전체에서 번호 범위 읽기 (묶음 자르기가 안 될 때 쓰는 예전 방식) */
 async function readRange(ai: GoogleGenAI, model: string, image: string, mimeType: string,
-  companies: string[], from: number, to: number): Promise<PageRead> {
+  companies: string[], from: number, to: number, frequent: string[] = []): Promise<PageRead> {
   const p = await callJson<PageRead>(ai, model, `whole ${from}-${to}`, image, mimeType,
-    ocrPrompt(companies, from, to), schemaFor(companies), level(process.env.GEMINI_THINKING, "low"), 75_000);
+    ocrPrompt(companies, from, to, frequent), schemaFor(companies), level(process.env.GEMINI_THINKING, "low"), 75_000);
   return keepRange(p, from, to);
 }
 
@@ -147,7 +154,7 @@ rotate: 사진을 시계 방향으로 몇 도 돌려야 글씨가 똑바로 서�
   예: 기록지가 왼쪽으로 누워 있어 글씨가 아래에서 위로 읽히면 90.
 또 오른쪽 위 '월일' 칸 값을 date_text(예: "10/15"), '총댓수' 칸 값을 total_text로 적으세요. 없으면 "".`;
 
-function blockPrompt(companies: string[], group: number) {
+function blockPrompt(companies: string[], group: number, frequent: string[] = []) {
   const from = (group - 1) * 20 + 1, to = group * 20;
   return `이 사진은 손으로 쓴 '폐기물 반출 현황' 기록지에서 잘라낸 한 묶음입니다.
 묶음은 [번호 | 차량번호 | 업체 | 출차시간] 4칸 × 20줄이고, 이 묶음의 번호는 ${from}~${to}입니다
@@ -158,7 +165,7 @@ function blockPrompt(companies: string[], group: number) {
 [각 칸을 적는 법 — 해석하지 말고 보이는 그대로]
 - seq: 인쇄된 번호(숫자).
 - vehicle: 차량번호 숫자 4자리. 애매한 숫자는 가장 그럴듯한 숫자를 쓰고 끝에 '?'를 붙이세요.
-${companyRule(companies)}
+${companyRule(companies, frequent)}
 - time: 출차시간을 적힌 그대로. '06:08'처럼 시:분이 다 있으면 그대로, 분만 적혀 있으면 '11'처럼 분 숫자만,
   ':48'처럼 콜론과 분만 있으면 ':48'. 시를 추측해서 채우지 마세요.
 - date_text, total_text는 빈 문자열로 두세요.`;
@@ -208,7 +215,7 @@ async function crop(buf: Buffer, box: Box, rotate: number): Promise<string> {
  * 위치를 못 찾으면 null(예전 방식으로). 한 조각이 두 번 실패하면 그 번호 범위만 사진 전체에서 읽음.
  */
 async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string,
-  companies: string[]): Promise<PageRead | null> {
+  companies: string[], frequent: string[] = []): Promise<PageRead | null> {
   let layout: Layout;
   try {
     // 평소 5초 안팎 걸리는 가벼운 요청 — 25초 넘게 답이 없으면 이 모델은 지금 막힌 것
@@ -232,14 +239,14 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
     const piece = await crop(buf, boxes[g - 1], Number(layout.rotate) || 0);
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g), schemaFor(companies), thinking);
+        const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g, frequent), schemaFor(companies), thinking);
         return keepRange(p, from, to).rows;
       } catch (e) {
         if (shouldSwitch(e)) throw e;
         console.warn(`[gemini] block${g} 실패(${attempt}):`, String((e as Error)?.message).slice(0, 150));
       }
     }
-    return (await readRange(ai, model, imageBase64, mimeType, companies, from, to)).rows; // 마지막 수단
+    return (await readRange(ai, model, imageBase64, mimeType, companies, from, to, frequent)).rows; // 마지막 수단
   };
   const groups = await Promise.all([1, 2, 3, 4, 5, 6].map(readGroup));
   return mergeHalves(
@@ -291,7 +298,7 @@ function modelChain(): string[] {
  * 위치를 못 찾으면 예전처럼 1~60 / 61~120 두 번으로 나눠 읽음.
  * 한도·서버 혼잡·시간 초과면 다음 모델로 넘김 (기본: 최신 Flash → 3.6 Flash → 3.5 Flash-Lite).
  */
-export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
+export async function readPageGemini(imageBase64: string, mimeType: string, companies: string[], frequent: string[] = []): Promise<PageRead> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 환경변수가 없습니다.");
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: 90_000 } });
@@ -305,7 +312,7 @@ export async function readPageGemini(imageBase64: string, mimeType: string, comp
     if (Date.now() - started > 170_000) break;
     tried.push(model);
     try {
-      const page = await readWithModel(ai, model, imageBase64, mimeType, companies);
+      const page = await readWithModel(ai, model, imageBase64, mimeType, companies, frequent);
       if (tried.length > 1) console.log(`[gemini] ${model}(으)로 읽음 — 앞 모델: ${tried.slice(0, -1).join(", ")}`);
       return page;
     } catch (e) {
@@ -320,13 +327,13 @@ export async function readPageGemini(imageBase64: string, mimeType: string, comp
   throw new Error(`Gemini 서버 응답 없음 (시도한 모델: ${tried.join(", ")}) ${String((lastErr as Error)?.message ?? "").slice(0, 120)}`);
 }
 
-async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string, companies: string[]): Promise<PageRead> {
+async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string, mimeType: string, companies: string[], frequent: string[] = []): Promise<PageRead> {
   if (process.env.GEMINI_BLOCKS !== "off") {
-    const byBlocks = await readByBlocks(ai, model, imageBase64, mimeType, companies);
+    const byBlocks = await readByBlocks(ai, model, imageBase64, mimeType, companies, frequent);
     if (byBlocks) return byBlocks;
   }
   // 예전 방식: 왼쪽·오른쪽 절반을 동시에. 한쪽만 실패하면(한도 제외) 그쪽만 한 번 더 읽음
-  const half = (from: number, to: number) => readRange(ai, model, imageBase64, mimeType, companies, from, to);
+  const half = (from: number, to: number) => readRange(ai, model, imageBase64, mimeType, companies, from, to, frequent);
   const once = async (from: number, to: number) => {
     try {
       return await half(from, to);
