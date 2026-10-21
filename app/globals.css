@@ -216,3 +216,11 @@ table.xg { user-select: none; -webkit-user-select: none; table-layout: fixed; }
 .xgrid .ctx button:hover:not(:disabled) { background: var(--bg); }
 .xgrid .ctx kbd { font: inherit; font-size: 11px; color: var(--muted); }
 .xgrid .ctx hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
+
+/* ── 사진 확대 ── */
+.rot-zoom { display: inline-flex; align-items: center; gap: 2px; }
+.rot-zoom .rot-deg { min-width: 40px; text-align: center; }
+.rot-box { cursor: zoom-in; touch-action: none; }
+.rot-box.zoomed { cursor: grab; }
+.rot-box.zoomed:active { cursor: grabbing; }
+.rot-stage { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
