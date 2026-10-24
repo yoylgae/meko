@@ -10,6 +10,9 @@ export async function readPage(imageBase64: string, mimeType: string, companies:
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     console.error("[ocr] Gemini 실패:", msg.slice(0, 300));
+    if (/PERMISSION_DENIED|denied access|API key not valid|API_KEY_INVALID|"code":\s*40[13]/i.test(msg)) {
+      throw new OcrFailed("Google이 이 Gemini 프로젝트(API 키)의 사용을 막았습니다. 사이트 문제가 아니라 Google 계정·결제 쪽 문제라 관리자가 Google AI Studio에서 확인해야 합니다.");
+    }
     if (e instanceof QuotaError) {
       throw new OcrFailed(e.daily
         ? "Gemini 오늘 사용량 한도를 다 썼습니다. 한국시간 오후 4~5시에 초기화됩니다."

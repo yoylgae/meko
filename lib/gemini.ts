@@ -221,7 +221,7 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
     // 평소 5초 안팎 걸리는 가벼운 요청 — 25초 넘게 답이 없으면 이 모델은 지금 막힌 것
     layout = await callJson<Layout>(ai, model, "layout", imageBase64, mimeType, LAYOUT_PROMPT, layoutSchema, ThinkingLevel.LOW, 25_000);
   } catch (e) {
-    if (shouldSwitch(e)) throw e; // 한도·서버 문제면 같은 모델로 더 하지 않고 다음 모델로
+    if (shouldSwitch(e) || isAccessDenied(e)) throw e; // 한도·서버 문제면 다음 모델로, 접근 거부면 중단
     console.warn("[gemini] 묶음 위치 찾기 실패 → 예전 방식:", String((e as Error)?.message).slice(0, 150));
     return null;
   }
@@ -242,7 +242,7 @@ async function readByBlocks(ai: GoogleGenAI, model: string, imageBase64: string,
         const p = await callJson<PageRead>(ai, model, `block${g}`, piece, "image/jpeg", blockPrompt(companies, g, frequent), schemaFor(companies), thinking);
         return keepRange(p, from, to).rows;
       } catch (e) {
-        if (shouldSwitch(e)) throw e;
+        if (shouldSwitch(e) || isAccessDenied(e)) throw e;
         console.warn(`[gemini] block${g} 실패(${attempt}):`, String((e as Error)?.message).slice(0, 150));
       }
     }
@@ -278,6 +278,9 @@ function isServerTrouble(e: unknown): boolean {
   return status >= 500 || /UNAVAILABLE|DEADLINE_EXCEEDED|INTERNAL|overloaded|high demand|"code":\s*50\d|aborted|timed? ?out/i.test(msg);
 }
 const isMissingModel = (e: unknown) => /not found|is not supported|404/i.test(String((e as Error)?.message));
+/** 키·프로젝트가 막힌 경우 — 어떤 모델로 몇 번을 다시 해도 안 되므로 바로 멈춤 */
+const isAccessDenied = (e: unknown) =>
+  /PERMISSION_DENIED|denied access|API key not valid|API_KEY_INVALID/i.test(String((e as Error)?.message));
 /** 다른 모델로 넘겨야 하는 오류인가 (한도·서버 문제·없는 모델) */
 const shouldSwitch = (e: unknown) => !!quotaInfo(e) || isServerTrouble(e) || isMissingModel(e);
 
@@ -338,7 +341,7 @@ async function readWithModel(ai: GoogleGenAI, model: string, imageBase64: string
     try {
       return await half(from, to);
     } catch (e) {
-      if (shouldSwitch(e)) throw e;
+      if (shouldSwitch(e) || isAccessDenied(e)) throw e;
       console.warn(`[gemini] ${model} ${from}-${to} 실패, 한 번 더:`, String((e as Error)?.message).slice(0, 150));
       return half(from, to);
     }
