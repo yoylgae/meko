@@ -14,7 +14,7 @@ export type Dispatch = {
 /** 화면에서 쓰는 행: 확인이 필요한 칸 표시 포함 */
 export type EditRow = Dispatch & { check?: Partial<Record<"vehicle_no" | "company" | "out_time", string>> };
 
-export type RawRow = { seq?: number | string; vehicle?: string; company?: string; time?: string };
+export type RawRow = { seq?: number | string; vehicle?: string; company?: string; time?: string; check?: Record<string, string> };
 
 export type Company = { id?: number; name: string; sort_order: number; separate: boolean; frequent?: boolean; active?: boolean; recent?: number };
 
@@ -99,7 +99,7 @@ export function parseTime(raw: string, prev: { h: number; m: number } | null):
   return { value: `${h}:${String(m).padStart(2, "0")}`, h, m, note };
 }
 
-/** Gemini가 읽은 원본 행들 → 정리된 행 (업체 〃 처리, 시간 이어받기, 업체명 교정) */
+/** 인식기가 읽은 원본 행들 → 정리된 행 (업체 〃 처리, 시간 이어받기, 업체명 교정) */
 export function normalizeRows(raw: RawRow[], companyNames: string[], startSeq = 1, prevState?: {
   company?: string; time?: { h: number; m: number } | null;
 }, frequent: string[] = []): EditRow[] {
@@ -149,7 +149,7 @@ export function normalizeRows(raw: RawRow[], companyNames: string[], startSeq = 
     const seq = !Number.isInteger(printed) || printed <= 0 ? startSeq + i
       : offset === 0 ? printed
       : offset + ((printed - 1) % 120) + 1; // 장 안 위치(1~120) 기준이라 121~ 번호가 섞여 와도 겹치지 않음
-    out.push({ seq, vehicle_no: vehicle || vRaw, company, out_time, check });
+    out.push({ seq, vehicle_no: vehicle || vRaw, company, out_time, check: { ...(r.check ?? {}), ...check } });
   });
   return out;
 }

@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/read.py": {
+      "maxDuration": 120,
+      "memory": 2048,
+      "includeFiles": "api/_lib/**",
+      "excludeFiles": "{node_modules/**,.next/**,app/**,lib/**,supabase/**}"
+    }
+  }
+}

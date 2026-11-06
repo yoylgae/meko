@@ -149,10 +149,14 @@ function Editor() {
       for (let i = 0; i < files.length; i++) {
         const label = files.length > 1 ? `(${i + 1}/${files.length}장) ` : "";
         const image = await shrink(files[i]);
-        setBusy(`Gemini가 기록지를 읽는 중… ${label}20~40초`);
+        setBusy(`기록지를 읽는 중… ${label}10~20초`);
         const fd = new FormData();
         fd.append("image", image, "scan.jpg");
         fd.append("date", date);
+        // 앞 장(또는 이미 있는 마지막 행)의 출차시각 → 이번 장 시간이 그 뒤로 이어지게
+        const prevRows = ocrs.length ? ocrs[ocrs.length - 1].rows.map((x) => String(x.time ?? "")) : rows.map((x) => x.out_time);
+        const lastT = [...prevRows].reverse().map((t) => timeToMinutes(t)).find((t) => t !== null);
+        if (lastT != null) fd.append("after", String(lastT));
         const r = await fetch("/api/ocr", { method: "POST", body: fd });
         const j: Record<string, unknown> = await r.json().catch(() => ({
           error: r.status === 504 ? "인식 시간이 너무 오래 걸려 중단됐습니다. 사진을 다시 올려 주세요." : `서버 오류 (${r.status})`,
