@@ -19,6 +19,18 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        """상태 확인: 인식기를 불러와 빈 칸 하나를 읽어 봄"""
+        try:
+            import numpy as np, cv2, onnxruntime
+            import reader
+            x = np.zeros((1, 1, 32, 128), np.float32)
+            reader._onnx("veh").run(None, {"x": x})
+            return self._send(200, {"ok": True, "cv2": cv2.__version__, "onnxruntime": onnxruntime.__version__,
+                                    "companies": reader.companies_of_model()})
+        except Exception as e:
+            return self._send(500, {"ok": False, "error": f"{type(e).__name__}: {e}"})
+
     def do_POST(self):
         k = _key()
         if not k or not hmac.compare_digest(self.headers.get("x-meko-key", ""), k):
