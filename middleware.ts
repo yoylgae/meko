@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session";
 
 // /api/read 는 사이트 서버만 부르는 Python 인식기 (비밀 머리글로 따로 확인)
-const PUBLIC = ["/login", "/signup", "/api/login", "/api/signup", "/api/read"];
+const PUBLIC = ["/login", "/signup", "/api/login", "/api/signup", "/api/read", "/api/train-data"];
 
 /** 로그인 여부만 확인 (승인·현장 권한은 각 API에서 DB로 확인) */
 export async function middleware(req: NextRequest) {
