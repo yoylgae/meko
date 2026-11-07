@@ -117,7 +117,10 @@ def lattice(tag):
     # 가로선: 22줄. 첫 해: 세로 기준 위치 = 표 가운데에서의 y
     # 표 폭의 절반도 안 되는 짧은 가로선(집게·종이 끝 등)은 제외
     maxspan = max(L["span"] for L in H)
-    Hc = sorted([L for L in H if L["span"] > 0.5 * maxspan], key=lambda L: curve_y(L, w / 2))
+    Hc = [L for L in H if L["span"] > 0.5 * maxspan]
+    # 표 왼쪽 끝까지 오지 않고 한참 오른쪽에서 시작하는 선(집게·종이 끝 그림자)은 표 선이 아님
+    um = np.median([L["umin"] for L in Hc])
+    Hc = sorted([L for L in Hc if L["umin"] < um + 0.06 * w], key=lambda L: curve_y(L, w / 2))
     ys = np.array([curve_y(L, w / 2) for L in Hc])
     # 연속 간격 중 가장 흔한 값 = 줄 높이
     rowh = np.median(np.diff(ys))
