@@ -61,6 +61,11 @@ def match_columns(Vc, ymid, table_h, xlo=-1e9, xhi=1e9):
     cand = [L for L in Vc if L["span"] > 0.35 * table_h and xlo <= curve_x(L, ymid) <= xhi]
     xs = np.array([curve_x(L, ymid) for L in cand]); n = len(xs)
     inner = COL_FR[1:]
+    # 양식에서 묶음 경계는 굵은 선 → 굵은 긴 선이 경계면 가산점. 묶음 안에 엉뚱한 긴 선이 많으면 감점
+    longs = [i for i in range(n) if cand[i]["span"] > 0.85 * table_h]
+    mxt = max([cand[i]["thick"] for i in longs] or [1])
+    sep_bonus = np.array([0.6 if (cand[i]["span"] > 0.85 * table_h and cand[i]["thick"] > 0.75 * mxt) else 0.0 for i in range(n)])
+    strong = np.array([cand[i]["span"] > 0.85 * table_h and cand[i]["thick"] >= 2.5 for i in range(n)])
     def block(xa, xb):
         wdt = xb - xa
         if wdt < 150: return -1e9, None
@@ -69,14 +74,16 @@ def match_columns(Vc, ymid, table_h, xlo=-1e9, xhi=1e9):
             d = np.abs(xs - (xa + f * wdt)); j = int(np.argmin(d)); tol = 0.06 * wdt
             if d[j] < tol: sc += 1 - d[j] / tol; picks.append(j)
             else: picks.append(None)
-        return sc, picks
+        inside = (xs > xa + 0.04 * wdt) & (xs < xb - 0.04 * wdt) & strong
+        extra = int(inside.sum()) - sum(1 for p in picks if p is not None and inside[p])
+        return sc - 0.3 * max(extra, 0), picks
     BS = {}
     for i in range(n):
         for j in range(i + 1, n):
             BS[(i, j)] = block(xs[i], xs[j])[0]
     # dp[(prev,last)] = (점수, 경계 목록)
     best = None
-    dp = {(i, j): (BS[(i, j)] + 0.5, [i, j]) for (i, j) in BS if BS[(i, j)] > 1.0}
+    dp = {(i, j): (BS[(i, j)] + 0.5 + sep_bonus[i] + sep_bonus[j], [i, j]) for (i, j) in BS if BS[(i, j)] > 1.0}
     for step in range(5):  # 경계 2개 → 7개
         nd = {}
         for (i, j), (sc, path) in dp.items():
@@ -84,12 +91,12 @@ def match_columns(Vc, ymid, table_h, xlo=-1e9, xhi=1e9):
             for k in range(j + 1, n):
                 w1 = xs[k] - xs[j]
                 if not (0.82 < w1 / w0 < 1.22): continue
-                v = sc + BS[(j, k)] + 0.5
+                v = sc + BS[(j, k)] + 0.5 + sep_bonus[k]
                 if (j, k) not in nd or nd[(j, k)][0] < v: nd[(j, k)] = (v, path + [k])
         # 여기서 끝내고 사진 밖으로 잘린 양 끝 경계를 추정하는 경우도 후보
         for (i, j), (sc, path) in dp.items():
             m = len(path)
-            if m in (5, 6):
+            if m in (3, 4, 5, 6):
                 miss = 7 - m
                 for nl in range(miss + 1):
                     v2 = sc - 0.8 * miss
@@ -111,14 +118,23 @@ def match_columns(Vc, ymid, table_h, xlo=-1e9, xhi=1e9):
             if pj is not None: out[k * 4 + c] = cand[pj]
     return out
 
-def lattice(tag):
+def lattice_once(tag):
     img, V, H = build(f"in/{tag}.jpg" if isinstance(tag, str) else tag, "out", tag if isinstance(tag, str) else "img")
     h, w = img.shape[:2]
     # 가로선: 22줄. 첫 해: 세로 기준 위치 = 표 가운데에서의 y
     # 표 폭의 절반도 안 되는 짧은 가로선(집게·종이 끝 등)은 제외
     maxspan = max(L["span"] for L in H)
-    Hc = [L for L in H if L["span"] > 0.5 * maxspan]
+    Hc = [L for L in H if L["span"] > 0.4 * maxspan]
     # 표 왼쪽 끝까지 오지 않고 한참 오른쪽에서 시작하는 선(집게·종이 끝 그림자)은 표 선이 아님
+    # 다른 줄들과 기울기가 크게 다른 선(엉뚱하게 이어 붙은 선)은 버림
+    def slope(L): return (curve_y(L, w * 0.6) - curve_y(L, w * 0.4)) / (0.2 * w)
+    # 종이가 휘면 위·아래 줄 기울기가 다르므로, 가까운 줄들(위아래 3개씩)과 비교
+    Hs = sorted(Hc, key=lambda L: curve_y(L, w / 2)); sl = np.array([slope(L) for L in Hs])
+    keep = []
+    for i, L in enumerate(Hs):
+        nb = np.r_[sl[max(0, i - 3):i], sl[i + 1:i + 4]]
+        if len(nb) == 0 or abs(sl[i] - np.median(nb)) < 0.03: keep.append(L)
+    Hc = keep
     um = np.median([L["umin"] for L in Hc])
     Hc = sorted([L for L in Hc if L["umin"] < um + 0.06 * w], key=lambda L: curve_y(L, w / 2))
     ys = np.array([curve_y(L, w / 2) for L in Hc])
@@ -164,9 +180,50 @@ def lattice(tag):
     for j in range(N_H):
         for i in range(len(T_V)):
             x = vx(i, ys.mean()); y = hy(j, x)
-            for _ in range(15): x = vx(i, y); y = hy(j, x)
+            for _ in range(15):
+                # 사진 밖으로 잘린 칸은 멀리 튀지 않게 가둠
+                x = float(np.clip(vx(i, y), -0.5 * w, 1.5 * w)); y = float(np.clip(hy(j, x), -0.5 * h, 1.5 * h))
             P[j, i] = (x, y)
     return img, refine_rows(img, refine_cols(img, P))
+
+CONFIGS = [(12, 40, True), (8, 60, True), (12, 40, False), (8, 60, False)]
+
+def fit_score(img, P):
+    """격자가 실제 표 선 위에 얼마나 잘 놓였나: 격자 선분 위 점들이 '선'(가늘고 긴 잉크)인 비율 (사진 안쪽만)"""
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bw = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 10)
+    bw = cv2.dilate(bw, np.ones((3, 3), np.uint8)) > 0
+    H_, W_ = bw.shape; hit = tot = 0
+    nj, ni = P.shape[:2]
+    for j in range(nj):
+        for i in range(ni):
+            for dj, di in ((0, 1), (1, 0)):
+                if j + dj >= nj or i + di >= ni: continue
+                a, b = P[j, i], P[j + dj, i + di]
+                t = np.linspace(0.1, 0.9, 12)
+                xs = a[0] + (b[0] - a[0]) * t; ys = a[1] + (b[1] - a[1]) * t
+                ok = (xs >= 0) & (xs < W_) & (ys >= 0) & (ys < H_)
+                if ok.sum() < 6: continue
+                hit += bw[ys[ok].astype(int), xs[ok].astype(int)].sum(); tot += ok.sum()
+    return hit / max(tot, 1), tot
+
+def lattice(tag):
+    """여러 설정으로 표를 찾아 보고 격자가 실제 선에 가장 잘 맞는 것을 고름"""
+    best = None
+    for c, k, d in CONFIGS:
+        grid.MASK_C, grid.MASK_K, grid.DESKEW = c, k, d
+        try:
+            img, P = lattice_once(tag)
+        except Exception as e:
+            if grid.VERBOSE: print("  설정", (c, k, d), "실패", e)
+            continue
+        sc, n = fit_score(img, P)
+        if grid.VERBOSE: print("  설정", (c, k, d), f"맞음 {sc:.3f} (점 {n})")
+        if best is None or sc > best[0]: best = (sc, img, P)
+        if sc > 0.93: break
+    grid.MASK_C, grid.MASK_K, grid.DESKEW = CONFIGS[0]
+    if best is None: raise RuntimeError("표를 찾지 못함")
+    return best[1], best[2]
 
 def refine_cols(img, P):
     """휘어진 곳: 세로선 교점을 실제 세로선 흔적에 좌우로 맞춤. 가운데 줄에서 위·아래로 퍼져 나감"""
@@ -191,7 +248,7 @@ def refine_cols(img, P):
             ys = np.linspace(ya, yb, 30); base = np.linspace(xa, xb, 30) + prior[i]
             ok = (ys >= 0) & (ys < H_ - 1)
             best, bd = -1, 0.0
-            rng = 0.25 * min(cw, 60)
+            rng = 0.25 * min(abs(cw), 60) if np.isfinite(cw) else 5
             for d in np.arange(-rng, rng + 0.1, 1.0):
                 xx = np.clip(base + d, 0, W_ - 1).astype(int)
                 v = vl[ys[ok].astype(int), xx[ok]].mean() - 0.002 * abs(d)

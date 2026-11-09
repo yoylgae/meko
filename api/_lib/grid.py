@@ -2,13 +2,15 @@
 import cv2, numpy as np, sys, os, json
 
 W_WORK = 1800
-VERBOSE = True  # 작업 해상도(가로)
+VERBOSE = True
+# 선 찾기 설정 (cells.lattice 가 여러 설정으로 해 보고 가장 잘 맞는 걸 고름)
+MASK_C, MASK_K, DESKEW = 12, 40, True  # 작업 해상도(가로)
 
 def masks(g):
     h, w = g.shape
-    bw = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 12)
-    hl = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (w // 40, 1)))
-    vl = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, h // 40)))
+    bw = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, MASK_C)
+    hl = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (w // MASK_K, 1)))
+    vl = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, h // MASK_K)))
     return bw, hl, vl
 
 def pieces(mask, axis):
@@ -53,6 +55,16 @@ def group_lines(ps, axis, tol):
             for b in range(len(lines)):
                 if a == b: continue
                 A, B = lines[a], lines[b]
+                ov0, ov1 = max(A["u"].min(), B["u"].min()), min(A["u"].max(), B["u"].max())
+                if ov1 - ov0 > 60:
+                    # 겹치는 구간이 있으면: 그 구간에서 두 선 높이가 거의 같으면 같은 선
+                    uu = np.linspace(ov0, ov1, 20)
+                    fa = np.polyfit(A["u"], A["v"], 1 if np.ptp(A["u"]) < 400 else 2)
+                    fb = np.polyfit(B["u"], B["v"], 1 if np.ptp(B["u"]) < 400 else 2)
+                    if np.mean(np.abs(np.polyval(fa, uu) - np.polyval(fb, uu))) < tol * 0.6:
+                        A["u"] = np.concatenate([A["u"], B["u"]]); A["v"] = np.concatenate([A["v"], B["v"]]); A["thick"] += B["thick"]
+                        lines.pop(b); merged = True; break
+                    continue
                 if A["u"].max() > B["u"].min() + 60: continue          # A가 B 왼쪽(위쪽)에 있어야
                 if B["u"].min() - A["u"].max() > 300: continue
                 j = (A["u"].max() + B["u"].min()) / 2
@@ -87,10 +99,32 @@ def intersect(H, V):
         x = at(V, y); y = at(H, x)
     return x, y
 
+def skew_angle(g):
+    """사진이 기울어진 각도: 가로로 돌려 봤을 때 줄 그림자(가로 투영)가 가장 또렷한 각도"""
+    small = cv2.resize(g, (900, int(g.shape[0] * 900 / g.shape[1])), interpolation=cv2.INTER_AREA)
+    bw = cv2.adaptiveThreshold(small, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 21, 10)
+    h, w = bw.shape
+    def score(a):
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), a, 1)
+        r = cv2.warpAffine(bw, M, (w, h), flags=cv2.INTER_NEAREST)
+        p = r.sum(1).astype(np.float64)
+        return float(np.sum(np.diff(p) ** 2))
+    best = max(np.arange(-10, 10.01, 0.5), key=score)
+    return max(np.arange(best - 0.5, best + 0.51, 0.1), key=score)
+
+def deskew(img):
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    a = skew_angle(g)
+    if abs(a) < 0.3: return img
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), a, 1)
+    return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
 def build(path, outdir, tag):
     img0 = cv2.imread(path) if isinstance(path, str) else path
     s = W_WORK / img0.shape[1]
     img = cv2.resize(img0, (W_WORK, int(img0.shape[0] * s)), interpolation=cv2.INTER_AREA)
+    if DESKEW: img = deskew(img)
     g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = g.shape
     bw, hl, vl = masks(g)
@@ -101,7 +135,7 @@ def build(path, outdir, tag):
     V = [L for L in V if L["span"] > h * 0.25]
     H = [L for L in H if L["span"] > w * 0.25]
     # 표 세로 범위(세로선 대부분이 덮는 구간) 안의 가로선만 — 종이 끝·클립 제거
-    top = np.median([L["umin"] for L in V]); bot = np.percentile([L["umax"] for L in V], 75)
+    top = np.percentile([L["umin"] for L in V], 25); bot = np.percentile([L["umax"] for L in V], 75)
     H = [L for L in H if top - h * 0.03 < at(L, w / 2) < bot + h * 0.06]
     V.sort(key=lambda L: at(L, h / 2)); H.sort(key=lambda L: at(L, w / 2))
     if VERBOSE: print(tag, "세로선", len(V), "가로선", len(H))
