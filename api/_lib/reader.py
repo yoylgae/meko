@@ -10,6 +10,7 @@ CH = "0123456789:"
 SIZE = {"veh": (128, 32), "time": (104, 32), "co": (72, 32)}
 CUT = {"veh": (1, 240), "co": (2, 140), "time": (3, 200)}   # (칸 번호, 잘라낼 폭)
 BLANK = 0.02
+VERBOSE = False
 _sess = {}
 
 
@@ -150,7 +151,9 @@ def read(img0, known=(), veh_co=None, site_companies=None, after=None):
     best = None
     h, w = img0.shape[:2]
     # 사진 방향: 가로 사진은 그대로/뒤집기, 세로 사진은 왼쪽·오른쪽으로 돌려 보고 더 또렷하게 읽히는 쪽
-    tries = [None, cv2.ROTATE_180] if w >= h else [cv2.ROTATE_90_COUNTERCLOCKWISE, cv2.ROTATE_90_CLOCKWISE]
+    # 기록지를 세로로 가까이 찍은 사진도 있으니, 항상 그대로 먼저 → 안 되면 돌려 봄
+    tries = [None, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE, cv2.ROTATE_90_CLOCKWISE] if w >= h \
+        else [None, cv2.ROTATE_90_COUNTERCLOCKWISE, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180]
     for rot in tries:
         im = img0 if rot is None else cv2.rotate(img0, rot)
         try:
@@ -164,9 +167,13 @@ def read(img0, known=(), veh_co=None, site_companies=None, after=None):
             n += 1
         if n == 0: continue
         lv, lt, pc = recognize(cells[:n])
-        conf = float(np.mean(lv.max(-1))) + float(np.mean(lt.max(-1)))
+        # 제대로 된 방향이면 차량은 4자리, 시간은 '분' 또는 '시:분' 모양으로 읽힘
+        vq = np.mean([bool(re.fullmatch(r"\d{4}", greedy(x))) for x in lv])
+        tq = np.mean([bool(re.fullmatch(r"(\d{1,2}:)?\d{2}", greedy(x))) for x in lt])
+        conf = float(vq + tq) + 0.002 * n
+        if VERBOSE: print("  방향", rot, "줄", n, f"차량모양 {vq:.2f} 시간모양 {tq:.2f}")
         if best is None or conf > best[0]: best = (conf, cells[:n], lv, lt, pc)
-        if conf > -0.15: break        # 충분히 또렷하면 다른 방향은 안 봄
+        if vq + tq > 1.5 and n >= 3: break        # 충분히 또렷하면 다른 방향은 안 봄
     if best is None: return []
     _, cells, lv, lt, pc = best
     known = sorted({k for k in known if re.fullmatch(r"\d{4}", k)})
